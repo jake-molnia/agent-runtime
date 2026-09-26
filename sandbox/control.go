@@ -300,3 +300,18 @@ func (c *Control) ActiveClaims(ctx context.Context, namespaces []string) (map[st
 	}
 	return active, nil
 }
+
+// Find resolves an owned lease without waiting for readiness, including failed or suspended workloads.
+func (c *Control) Find(ctx context.Context, namespace, key string) (Lease, error) {
+	claim, err := c.API.Resource(Claims).Namespace(namespace).Get(ctx, ClaimName(key), metav1.GetOptions{})
+	if err != nil {
+		return Lease{}, err
+	}
+	sum := sha256.Sum256([]byte(key))
+	if claim.GetAnnotations()["agent-runtime/run-key"] != hex.EncodeToString(sum[:]) {
+		return Lease{}, errors.New("claim ownership mismatch")
+	}
+	name, _, _ := unstructured.NestedString(claim.Object, "status", "sandbox", "name")
+	host, _, _ := unstructured.NestedString(claim.Object, "status", "sandbox", "serviceFQDN")
+	return Lease{Namespace: namespace, Claim: claim.GetName(), UID: claim.GetUID(), Sandbox: name, Host: host}, nil
+}

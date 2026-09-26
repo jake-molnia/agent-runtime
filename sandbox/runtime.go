@@ -52,7 +52,7 @@ type Files struct {
 
 func NewFiles(base string, transport http.RoundTripper) (*Files, error) {
 	u, err := url.Parse(base)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
 		return nil, errors.New("invalid sandbox endpoint")
 	}
 	if transport == nil {

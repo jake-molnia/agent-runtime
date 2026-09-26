@@ -35,7 +35,7 @@ type Arguments struct {
 // New preserves streaming bodies; deadlines belong to individual request contexts.
 func New(address string, header http.Header, transport http.RoundTripper) (*Client, error) {
 	u, err := url.Parse(address)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("invalid OpenCode endpoint")
 	}
 	if transport == nil {

@@ -123,6 +123,22 @@ func Register(client *hatchet.Client, engine *orchestration.Engine, definitions 
 			return out, engine.Cleanup(ctx.GetContext(), input.Run, out.Prepared)
 		}, hatchet.WithParents(collect), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(time.Minute))
 	}
+	workflow.OnFailure(func(ctx hatchet.Context, input Input) (map[string]string, error) {
+		if ctx.StepRunErrors()["collect"] != "" {
+			return map[string]string{"status": "retained_until_expiry", "reason": "artifact_export_failed"}, nil
+		}
+		d, ok := definitions[input.Agent]
+		if !ok {
+			return nil, nil
+		}
+		input.Run.Key = ctx.WorkflowRunId()
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 45*time.Second)
+		defer cancel()
+		if err := engine.Cancel(cleanup, d, input.Run); err != nil {
+			return nil, errors.New("agent cleanup pending lease expiry")
+		}
+		return map[string]string{"status": "cleaned"}, nil
+	})
 	return workflow
 }
 

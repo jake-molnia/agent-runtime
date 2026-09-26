@@ -26,6 +26,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	process "sigs.k8s.io/agent-sandbox/packages/sandboxd/spec/process/v1"
 )
 
@@ -408,7 +409,7 @@ func (e *Engine) Cleanup(ctx context.Context, req Request, p Prepared) error {
 			cancel()
 		}
 		var identityErr error
-		if p.IdentityID != "" && e.Tailnet != nil {
+		if p.Hostname != "" && e.Tailnet != nil {
 			identityErr = e.Tailnet.Revoke(ctx, tailnet.Identity{ID: p.IdentityID, Hostname: p.Hostname})
 		}
 		return errors.Join(e.Control.Delete(ctx, p.Lease), identityErr)
@@ -443,4 +444,18 @@ func (e *Engine) Collect(ctx context.Context, req Request, p Prepared) (string, 
 	}
 	defer response.Body.Close()
 	return e.Artifacts.Put(ctx, req.Key, response.Body)
+}
+
+// Cancel stops an owned run even when its provision task failed before persisting a result.
+func (e *Engine) Cancel(ctx context.Context, d Definition, req Request) error {
+	lease, err := e.Control.Find(ctx, d.Namespace, req.Key)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	session, message := ids(req.Key)
+	p := Prepared{Lease: lease, SessionID: session, MessageID: message, Hostname: lease.Claim, Started: req.SubmittedAt}
+	return e.Cleanup(ctx, req, p)
 }
