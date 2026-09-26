@@ -117,7 +117,9 @@ func worker(ctx context.Context) error {
 	worker.Use(instrument.Middleware())
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", tel.Handler)
-	g, ctx := errgroup.WithContext(ctx)
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	defer stopWorker()
+	g, ctx := errgroup.WithContext(workerCtx)
 	if os.Getenv("TAILSCALE_CLIENT_ID") != "" {
 		namespaces := []string{}
 		seen := map[string]bool{}
@@ -146,7 +148,7 @@ func worker(ctx context.Context) error {
 		})
 	}
 	g.Go(func() error { return httpServer(ctx, ":9091", mux) })
-	g.Go(func() error { return worker.StartBlocking(ctx) })
+	g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
 	return g.Wait()
 }
 

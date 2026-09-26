@@ -111,6 +111,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 	return nil
 }
 
+var hostnamePattern = regexp.MustCompile(`^ar-[a-f0-9]{32}$`)
 var tagPattern = regexp.MustCompile(`^tag:[a-z][a-z0-9-]*$`)
 
 func (c *Client) Issue(ctx context.Context, hostname string, tags []string) (Identity, error) {
@@ -182,7 +183,7 @@ func (c *Client) Reap(ctx context.Context, active map[string]bool) error {
 			continue
 		}
 		// Only this library's deterministic names are eligible, never other sandbox users.
-		if !regexp.MustCompile(`^ar-[a-f0-9]{32}$`).MatchString(d.Hostname) {
+		if !hostnamePattern.MatchString(d.Hostname) {
 			continue
 		}
 		for _, tag := range d.Tags {

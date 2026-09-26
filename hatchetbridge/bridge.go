@@ -62,6 +62,9 @@ func Register(client *hatchet.Client, engine *orchestration.Engine, definitions 
 			return orchestration.Prepared{}, errors.New("unknown agent definition")
 		}
 		input.Run.Key = ctx.WorkflowRunId()
+		if input.Run.SubmittedAt.After(time.Now().Add(time.Second)) {
+			return orchestration.Prepared{}, errors.New("submission time is in the future")
+		}
 		if input.Run.SubmittedAt.IsZero() {
 			input.Run.SubmittedAt = time.Now()
 		}
@@ -145,4 +148,9 @@ func Register(client *hatchet.Client, engine *orchestration.Engine, definitions 
 // NotifyInteraction wakes the owning workflow after an authorized native permission/form reply.
 func NotifyInteraction(ctx context.Context, client *hatchet.Client, sessionID string) error {
 	return client.Events().Push(ctx, "agent:interaction", map[string]string{"session_id": sessionID}, hatchet.WithFilterScope(&sessionID))
+}
+
+// Submit stamps the enqueue time so startup metrics include Hatchet's scheduling delay.
+func Submit(ctx context.Context, client *hatchet.Client, agent, prompt string) (*hatchet.WorkflowRunRef, error) {
+	return client.RunNoWait(ctx, "agent-run", Input{Agent: agent, Run: orchestration.Request{Prompt: prompt, SubmittedAt: time.Now().UTC()}})
 }
