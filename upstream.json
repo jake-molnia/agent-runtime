@@ -1,9 +1,4 @@
 {
-  "opencode": {
-    "version": "2.0.12",
-    "revision": "2670273ff17da96f85c5826ced57aa1b368754fa",
-    "schema": "opencode/openapi.json"
-  },
   "sandbox": "v1.0.3",
   "hatchet": "v0.109.10"
 }

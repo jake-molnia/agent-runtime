@@ -26,7 +26,7 @@ func Run(ctx context.Context, args []string) error {
 	case "worker":
 		return worker(ctx)
 	case "version":
-		fmt.Println("agent-runtime; OpenCode 2.0.12; sandboxd v1.0.3")
+		fmt.Println("agent-runtime; upstream OpenCode V2; sandboxd v1.0.3")
 		return nil
 	default:
 		return errors.New("unknown command")

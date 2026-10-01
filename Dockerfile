@@ -19,9 +19,10 @@ ENTRYPOINT ["agent-runtime"]
 CMD ["worker"]
 
 FROM node:26.9.0-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bdcd73c103b096988922d7 AS sandbox
+ARG OPENCODE_CHANNEL=latest
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git python3 ripgrep tini \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global --prefix /opt/opencode-v2 --allow-scripts=@opencode/cli --no-audit --no-fund @opencode/cli@2.0.12 \
+    && npm install --global --prefix /opt/opencode-v2 --allow-scripts=@opencode/cli --no-audit --no-fund "@opencode/cli@${OPENCODE_CHANNEL}" \
     && ln -s /opt/opencode-v2/bin/opencode2 /usr/local/bin/opencode2 \
     && mkdir /workspace && chown node:node /workspace
 COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/

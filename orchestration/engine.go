@@ -186,7 +186,7 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	err = run.Phase(ctx, telemetry.Session, func(ctx context.Context) error {
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("opencode.session_id", out.SessionID))
 		// A stable client-selected ID permits recovery if session creation's response was lost.
-		res, getErr := client.SessionGet(ctx, opencode.Arguments{Path: map[string]string{"sessionID": out.SessionID}})
+		res, getErr := client.Do(ctx, "GET", "/api/session/{sessionID}", opencode.Arguments{Path: map[string]string{"sessionID": out.SessionID}})
 		if getErr == nil {
 			res.Body.Close()
 			return nil
@@ -195,7 +195,7 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 		if !errors.As(getErr, &status) || status.Status != 404 {
 			return getErr
 		}
-		res, createErr := client.SessionCreate(ctx, opencode.Arguments{Body: map[string]any{"id": out.SessionID, "location": map[string]string{"directory": d.Directory}, "agent": d.Agent, "model": d.Model}})
+		res, createErr := client.Do(ctx, "POST", "/api/session", opencode.Arguments{Body: map[string]any{"id": out.SessionID, "location": map[string]string{"directory": d.Directory}, "agent": d.Agent, "model": d.Model}})
 		if createErr == nil {
 			res.Body.Close()
 		}
@@ -302,7 +302,7 @@ func (e *Engine) Execute(ctx context.Context, d Definition, req Request, p Prepa
 	case <-time.After(2 * time.Second):
 	}
 	err = run.Phase(ctx, telemetry.Prompt, func(ctx context.Context) error {
-		res, submitErr := client.SessionPrompt(ctx, opencode.Arguments{Path: map[string]string{"sessionID": p.SessionID}, Body: map[string]any{"id": p.MessageID, "text": req.Prompt}})
+		res, submitErr := client.Do(ctx, "POST", "/api/session/{sessionID}/prompt", opencode.Arguments{Path: map[string]string{"sessionID": p.SessionID}, Body: map[string]any{"id": p.MessageID, "text": req.Prompt}})
 		if submitErr == nil {
 			res.Body.Close()
 		}
@@ -370,7 +370,7 @@ func Status(ctx context.Context, c *opencode.Client, id string) (SessionStatus, 
 		Data struct {
 			Outcome string `json:"outcome"`
 		} `json:"data"`
-	}](c.SessionGet(ctx, args))
+	}](c.Do(ctx, "GET", "/api/session/{sessionID}", args))
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -379,7 +379,7 @@ func Status(ctx context.Context, c *opencode.Client, id string) (SessionStatus, 
 	}
 	permissions, err := opencode.Decode[struct {
 		Data []json.RawMessage `json:"data"`
-	}](c.SessionPermissionList(ctx, args))
+	}](c.Do(ctx, "GET", "/api/session/{sessionID}/permission", args))
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -388,7 +388,7 @@ func Status(ctx context.Context, c *opencode.Client, id string) (SessionStatus, 
 	}
 	forms, err := opencode.Decode[struct {
 		Data []json.RawMessage `json:"data"`
-	}](c.SessionFormList(ctx, args))
+	}](c.Do(ctx, "GET", "/api/session/{sessionID}/form", args))
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -402,7 +402,7 @@ func (e *Engine) Cleanup(ctx context.Context, req Request, p Prepared) error {
 	return run.Phase(ctx, telemetry.Cleanup, func(ctx context.Context) error {
 		if c, err := e.Client(req.Key, p); err == nil {
 			interrupt, cancel := context.WithTimeout(ctx, 3*time.Second)
-			res, _ := c.SessionInterrupt(interrupt, opencode.Arguments{Path: map[string]string{"sessionID": p.SessionID}, Body: map[string]any{}})
+			res, _ := c.Do(interrupt, "POST", "/api/session/{sessionID}/interrupt", opencode.Arguments{Path: map[string]string{"sessionID": p.SessionID}, Body: map[string]any{}})
 			if res != nil {
 				res.Body.Close()
 			}
@@ -438,7 +438,7 @@ func (e *Engine) Collect(ctx context.Context, req Request, p Prepared) (string, 
 	if err != nil {
 		return "", err
 	}
-	response, err := client.ExperimentalSessionExport(ctx, opencode.Arguments{Path: map[string]string{"sessionID": p.SessionID}})
+	response, err := client.Do(ctx, "GET", "/api/experimental/session/{sessionID}/export", opencode.Arguments{Path: map[string]string{"sessionID": p.SessionID}})
 	if err != nil {
 		return "", err
 	}

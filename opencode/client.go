@@ -1,4 +1,4 @@
-// Package opencode provides the complete pinned V2 HTTP operation set, SSE, and WebSockets.
+// Package opencode connects to upstream OpenCode V2 over native HTTP, SSE, and WebSockets.
 package opencode
 
 import (
@@ -16,7 +16,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-const Version = "2.0.12"
 const MaxResponse = 16 << 20
 
 type Client struct {
@@ -60,11 +59,15 @@ func (c *Client) request(ctx context.Context, method, pattern string, a Argument
 	}
 	var body io.Reader
 	if a.Body != nil {
-		b, err := json.Marshal(a.Body)
-		if err != nil {
-			return nil, err
+		if stream, ok := a.Body.(io.Reader); ok {
+			body = stream
+		} else {
+			b, err := json.Marshal(a.Body)
+			if err != nil {
+				return nil, err
+			}
+			body = bytes.NewReader(b)
 		}
-		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.base.String(), "/")+pattern, body)
 	if err != nil {
@@ -78,7 +81,7 @@ func (c *Client) request(ctx context.Context, method, pattern string, a Argument
 	for k, v := range a.Header {
 		req.Header[k] = v
 	}
-	if body != nil {
+	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return req, nil
@@ -143,7 +146,7 @@ func (c *Client) Ready(ctx context.Context) error {
 	timer := time.NewTicker(100 * time.Millisecond)
 	defer timer.Stop()
 	for {
-		res, err := c.ServerInfo(ctx, Arguments{})
+		res, err := c.Do(ctx, "GET", "/api/info", Arguments{})
 		if err == nil {
 			res.Body.Close()
 			return nil

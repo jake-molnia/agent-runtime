@@ -13,6 +13,7 @@ import (
 const MaxEvent = 4 << 20
 
 type Event struct {
+	Raw  json.RawMessage `json:"-"`
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
 }
@@ -20,7 +21,7 @@ type Event struct {
 // Events consumes a volatile stream. Re-query session state after any disconnect.
 // The callback runs on the reader; it must not block on logging or UI delivery.
 func (c *Client) Events(ctx context.Context, receive func(Event) error) error {
-	res, err := c.EventSubscribe(ctx, Arguments{Header: http.Header{"Accept": []string{"text/event-stream"}}})
+	res, err := c.Do(ctx, "GET", "/api/event", Arguments{Header: http.Header{"Accept": []string{"text/event-stream"}}})
 	if err != nil {
 		return err
 	}
@@ -42,6 +43,7 @@ func ReadEvents(r io.Reader, receive func(Event) error) error {
 			if err := json.Unmarshal([]byte(strings.TrimSuffix(data.String(), "\n")), &event); err != nil {
 				return errors.New("invalid OpenCode event")
 			}
+			event.Raw = json.RawMessage(strings.TrimSuffix(data.String(), "\n"))
 			data.Reset()
 			if err := receive(event); err != nil {
 				return err
