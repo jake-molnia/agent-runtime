@@ -37,3 +37,12 @@ The CLI returns a Hatchet workflow run ID. The webhook invokes the same
 `github-pr-review` workflow. Neither path executes an agent in the submitting process.
 
 See [the authoring reference](definitions/README.md) for schemas and compilation.
+
+## Config-owned multi-agent workflows
+
+Production roles and workflow policy belong in `jake-molnia/config`, not this repo.
+Use `agentexec.Executor.Stage` to bind pinned authored packages to native execution,
+and `hatchetbridge.RegisterMessageDAG` for sequential steps, parallel investigation,
+and joins over typed immutable messages. See [config-owned composition](docs/config-owned-workflows.md)
+for the source review/verifier/adversarial/writeup contracts, ownership boundaries,
+and the investigation tools still required for production parity.
