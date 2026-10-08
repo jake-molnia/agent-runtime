@@ -58,7 +58,7 @@ func TestWebhookValidationAndSubmission(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			handler, err := NewWebhookHandler(WebhookConfig{Secret: []byte("webhook-secret"), Actions: []string{"opened"}, Allowed: map[int64]int64{11: 7}, Submit: func(ctx context.Context, input Input) error {
+			handler, err := NewWebhookHandler(WebhookConfig{Secret: func(context.Context) ([]byte, error) { return []byte("webhook-secret"), nil }, Actions: []string{"opened"}, Allowed: map[int64]int64{11: 7}, Submit: func(ctx context.Context, input Input) error {
 				calls++
 				if input.Repository != "owner/repo" || input.HeadSHA != strings.Repeat("b", 40) || input.DeliveryID != "delivery" {
 					t.Errorf("bad typed input %+v", input)
@@ -95,5 +95,55 @@ func TestWebhookValidationAndSubmission(t *testing.T) {
 				t.Fatal("leaked callback error")
 			}
 		})
+	}
+}
+
+func TestWebhookRereadsExternallyRotatedSecret(t *testing.T) {
+	secret := []byte("webhook-secret")
+	reads, submissions := 0, 0
+	handler, err := NewWebhookHandler(WebhookConfig{Secret: func(context.Context) ([]byte, error) {
+		reads++
+		return secret, nil
+	}, Actions: []string{"opened"}, Allowed: map[int64]int64{11: 7}, Submit: func(context.Context, Input) error { submissions++; return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := webhookBody()
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, signedRequest(body))
+	if first.Code != http.StatusAccepted {
+		t.Fatal(first.Body.String())
+	}
+	secret = []byte("rotated-webhook-secret")
+	old := httptest.NewRecorder()
+	handler.ServeHTTP(old, signedRequest(body))
+	if old.Code != http.StatusUnauthorized {
+		t.Fatal("old secret remained cached")
+	}
+	request := signedRequest(body)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(body))
+	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	rotated := httptest.NewRecorder()
+	handler.ServeHTTP(rotated, request)
+	if rotated.Code != http.StatusAccepted || reads != 3 || submissions != 2 {
+		t.Fatalf("rotation not honored: status=%d reads=%d submits=%d", rotated.Code, reads, submissions)
+	}
+}
+
+func TestWebhookSourceFailureDoesNotEnqueueOrLeak(t *testing.T) {
+	for _, source := range []struct {
+		secret []byte
+		err    error
+	}{{err: errors.New("private-secret-sentinel")}, {}, {secret: make([]byte, 1025)}} {
+		handler, err := NewWebhookHandler(WebhookConfig{Secret: func(context.Context) ([]byte, error) { return source.secret, source.err }, Actions: []string{"opened"}, Allowed: map[int64]int64{11: 7}, Submit: func(context.Context, Input) error { t.Error("unverified webhook submitted"); return nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, signedRequest(webhookBody()))
+		if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), "private-secret-sentinel") {
+			t.Fatalf("source error leaked or accepted: %d %s", recorder.Code, recorder.Body.String())
+		}
 	}
 }

@@ -27,6 +27,10 @@ Read [the setup guide](docs/agent-automations.md) before starting a worker.
 It covers Kubernetes pools, Hatchet, persistent storage, GitHub App permissions,
 webhook ingress, and migration from `AGENT_DEFINITIONS_FILE`.
 
+GitHub App credentials remain in externally managed Vault. See
+[the read-only connection guide](docs/github-vault.md) for public identity,
+secret references, and external workload authentication.
+
 After deployment, replace the example identity with canonical values from your PR:
 
 ```sh

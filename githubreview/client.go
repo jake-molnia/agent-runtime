@@ -20,14 +20,14 @@ import (
 
 type ClientConfig struct {
 	AppID      int64
-	PrivateKey *rsa.PrivateKey
+	PrivateKey func(context.Context) (*rsa.PrivateKey, error)
 	Allowed    map[int64]int64
 	BaseURL    string
 	HTTPClient *http.Client
 }
 type Client struct {
 	appID   int64
-	key     *rsa.PrivateKey
+	key     func(context.Context) (*rsa.PrivateKey, error)
 	allowed map[int64]int64
 	baseURL string
 	http    *http.Client
@@ -38,11 +38,8 @@ func (err *RejectedError) Error() string {
 	return fmt.Sprintf("GitHub rejected request with status %d", err.Status)
 }
 func NewClient(config ClientConfig) (*Client, error) {
-	if config.AppID <= 0 || config.PrivateKey == nil || config.PrivateKey.N == nil || config.PrivateKey.N.BitLen() < 2048 || len(config.Allowed) == 0 {
-		return nil, errors.New("GitHub App identity, RSA key and allowlist are required")
-	}
-	if err := config.PrivateKey.Validate(); err != nil {
-		return nil, errors.New("invalid GitHub App private key")
+	if config.AppID <= 0 || config.PrivateKey == nil || len(config.Allowed) == 0 {
+		return nil, errors.New("GitHub App identity, private key source and allowlist are required")
 	}
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.github.com"
@@ -77,7 +74,14 @@ func (client *Client) authorize(input Input) error {
 	}
 	return nil
 }
-func (client *Client) jwt() (string, error) {
+func (client *Client) jwt(ctx context.Context) (string, error) {
+	key, err := client.key(ctx)
+	if err != nil || key == nil || key.N == nil || key.N.BitLen() < 2048 {
+		return "", errors.New("GitHub App private key unavailable")
+	}
+	if err := key.Validate(); err != nil {
+		return "", errors.New("invalid GitHub App private key")
+	}
 	now := time.Now()
 	payload, err := json.Marshal(struct {
 		Issuer  int64 `json:"iss"`
@@ -89,7 +93,7 @@ func (client *Client) jwt() (string, error) {
 	}
 	unsigned := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	digest := sha256.Sum256([]byte(unsigned))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, client.key, crypto.SHA256, digest[:])
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
 	if err != nil {
 		return "", errors.New("GitHub App authentication failed")
 	}
@@ -136,7 +140,7 @@ func (client *Client) token(ctx context.Context, input Input, write bool) (strin
 	if err := client.authorize(input); err != nil {
 		return "", err
 	}
-	jwt, err := client.jwt()
+	jwt, err := client.jwt(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -168,7 +172,7 @@ func (client *Client) Canonical(ctx context.Context, input Input) (PullRequest, 
 	if err := client.authorize(input); err != nil {
 		return PullRequest{}, err
 	}
-	jwt, err := client.jwt()
+	jwt, err := client.jwt(ctx)
 	if err != nil {
 		return PullRequest{}, err
 	}
@@ -254,7 +258,7 @@ func (client *Client) Reviews(ctx context.Context, input Input) ([]Review, error
 	if err := client.authorize(input); err != nil {
 		return nil, err
 	}
-	jwt, err := client.jwt()
+	jwt, err := client.jwt(ctx)
 	if err != nil {
 		return nil, err
 	}

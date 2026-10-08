@@ -63,10 +63,8 @@ Set these worker variables:
 | `AGENT_ARTIFACT_DIR` | Durable native session export directory, required for structured agents |
 | `AGENT_SECRET_KEY_FILE` | Stable runtime key file, default `/secrets/runtime-key`, at least 32 bytes |
 | `AGENT_REVIEW_DATABASE_URL` | PostgreSQL DSN for durable review state, required for automations |
-| `GITHUB_APP_ID` | GitHub App ID |
-| `GITHUB_APP_KEY_FILE` | Worker-only RSA PEM private key, default `/secrets/github-app.pem` |
+| `GITHUB_CONNECTION_FILE` | Public App identity and read-only Vault references, default `/config/github.yaml` |
 | `GITHUB_REPOSITORIES_FILE` | Worker-owned repository ID to installation ID JSON allowlist |
-| `GITHUB_WEBHOOK_SECRET_FILE` | Exact webhook HMAC secret bytes, default `/secrets/github-webhook` |
 | `AGENT_WORKER_NAME` | Hatchet worker name, default `agent-runtime` |
 | `AGENT_WORKER_SLOTS` | Normal and durable slots, default `4` |
 
@@ -119,9 +117,13 @@ an App, create public tunnels, deploy infrastructure, or install the App automat
 2. Install the App only on approved repositories. Store repository ID to installation
    ID bindings in a worker-owned JSON file, using `examples/github-repositories.json`
    as the shape. Replace the example IDs with actual IDs.
-3. Mount the App RSA PEM key only in the worker. Set `GITHUB_APP_ID` and key path.
-4. Generate a webhook secret and save the exact bytes without a trailing newline.
-   Configure the same value in GitHub and the worker's secret file.
+3. Keep the App RSA private key and webhook secret in externally managed Vault
+   KV v2 paths. Configure public identity and references in `GITHUB_CONNECTION_FILE`.
+   Follow [the Vault connection guide](github-vault.md) for read-only retrieval and
+   externally managed workload authentication. Do not mount App-secret files.
+4. Configure GitHub with the same webhook secret held in Vault. Its exact bytes
+   must match. App registration, secret provisioning, and rotation stay outside
+   this runtime.
 5. Subscribe to Pull request events. Set the webhook URL to your TLS ingress path
    `/webhooks/github-pr-review`. Forward it to worker port 9091. This port also exposes
    `/metrics`; route only the webhook path publicly. Apply rate limits and TLS at ingress.

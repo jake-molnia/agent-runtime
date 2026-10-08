@@ -16,15 +16,15 @@ import (
 const MaxWebhookBytes = 1 << 20
 
 type WebhookConfig struct {
-	Secret  []byte
+	Secret  func(context.Context) ([]byte, error)
 	Actions []string
 	Allowed map[int64]int64
 	Submit  func(context.Context, Input) error
 }
 
 func NewWebhookHandler(config WebhookConfig) (http.Handler, error) {
-	if len(config.Secret) == 0 || len(config.Secret) > 1024 || len(config.Allowed) == 0 || config.Submit == nil || len(config.Actions) == 0 {
-		return nil, errors.New("webhook secret, allowlist, actions and submit callback are required")
+	if config.Secret == nil || len(config.Allowed) == 0 || config.Submit == nil || len(config.Actions) == 0 {
+		return nil, errors.New("webhook secret source, allowlist, actions and submit callback are required")
 	}
 	supported := map[string]bool{"opened": true, "reopened": true, "synchronize": true, "ready_for_review": true}
 	actions := make(map[string]bool)
@@ -41,7 +41,6 @@ func NewWebhookHandler(config WebhookConfig) (http.Handler, error) {
 		}
 		allowed[repositoryID] = installationID
 	}
-	secret := append([]byte(nil), config.Secret...)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			writer.Header().Set("Allow", "POST")
@@ -70,9 +69,18 @@ func NewWebhookHandler(config WebhookConfig) (http.Handler, error) {
 			return
 		}
 		supplied, err := hex.DecodeString(signature[7:])
+		if err != nil {
+			http.Error(writer, "invalid webhook signature", http.StatusUnauthorized)
+			return
+		}
+		secret, err := config.Secret(request.Context())
+		if err != nil || len(secret) == 0 || len(secret) > 1024 {
+			http.Error(writer, "webhook authentication unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		mac := hmac.New(sha256.New, secret)
 		mac.Write(body)
-		if err != nil || !hmac.Equal(supplied, mac.Sum(nil)) {
+		if !hmac.Equal(supplied, mac.Sum(nil)) {
 			http.Error(writer, "invalid webhook signature", http.StatusUnauthorized)
 			return
 		}

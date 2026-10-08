@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,11 +25,66 @@ func testClient(t *testing.T, serve http.HandlerFunc) (*Client, *rsa.PrivateKey)
 	}
 	server := httptest.NewServer(serve)
 	t.Cleanup(server.Close)
-	client, err := NewClient(ClientConfig{AppID: 19, PrivateKey: key, Allowed: map[int64]int64{11: 7}, BaseURL: server.URL})
+	client, err := NewClient(ClientConfig{AppID: 19, PrivateKey: func(context.Context) (*rsa.PrivateKey, error) { return key, nil }, Allowed: map[int64]int64{11: 7}, BaseURL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return client, key
+}
+
+func TestAppJWTRefreshesExternalPrivateKey(t *testing.T) {
+	first, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type contextMarker struct{}
+	ctx := context.WithValue(context.Background(), contextMarker{}, "request-context")
+	calls := 0
+	client, err := NewClient(ClientConfig{AppID: 19, Allowed: map[int64]int64{11: 7}, PrivateKey: func(received context.Context) (*rsa.PrivateKey, error) {
+		if received.Value(contextMarker{}) != "request-context" {
+			t.Error("key source did not receive request context")
+		}
+		calls++
+		if calls == 1 {
+			return first, nil
+		}
+		return second, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []*rsa.PrivateKey{first, second} {
+		token, err := client.jwt(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(token, ".")
+		signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+		if err := rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, digest[:], signature); err != nil {
+			t.Fatal("JWT used stale private key")
+		}
+	}
+	if calls != 2 {
+		t.Fatal("key source not consulted per JWT")
+	}
+}
+
+func TestUnavailablePrivateKeyNeverReachesGitHub(t *testing.T) {
+	requests := 0
+	client, _ := testClient(t, func(http.ResponseWriter, *http.Request) { requests++ })
+	client.key = func(context.Context) (*rsa.PrivateKey, error) { return nil, errors.New("private-secret-sentinel") }
+	input, _ := fixture()
+	if _, err := client.Canonical(context.Background(), input); err == nil || strings.Contains(err.Error(), "private-secret-sentinel") || requests != 0 {
+		t.Fatalf("key source failure leaked or requested GitHub: %v requests=%d", err, requests)
+	}
 }
 func TestAppJWTAndScopedTokens(t *testing.T) {
 	input, _ := fixture()
