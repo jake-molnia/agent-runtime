@@ -456,6 +456,9 @@ func (e *Engine) Cancel(ctx context.Context, d Definition, req Request) error {
 		return err
 	}
 	session, message := ids(req.Key)
-	p := Prepared{Lease: lease, SessionID: session, MessageID: message, Hostname: lease.Claim, Started: req.SubmittedAt}
+	p := Prepared{Lease: lease, SessionID: session, MessageID: message, Started: req.SubmittedAt}
+	if len(d.Tags) > 0 {
+		p.Hostname = lease.Claim
+	}
 	return e.Cleanup(ctx, req, p)
 }
