@@ -90,15 +90,7 @@ func Register(client *hatchet.Client, engine *orchestration.Engine, definitions 
 		input.Run.Key = ctx.WorkflowRunId()
 		input.Run.SubmittedAt = prepared.Started
 		ctx.Log("Running agent session")
-		result, err := engine.Execute(ctx.GetContext(), d, input.Run, prepared, func(waitCtx context.Context, kind string) error {
-			// Recheck on a bounded durable timeout even if an app notification was lost.
-			now, err := ctx.Now()
-			if err != nil {
-				return err
-			}
-			_, err = ctx.WaitFor(hatchet.OrCondition(hatchet.UserEventCondition("agent:interaction", "", hatchet.WithEventScope(prepared.SessionID), hatchet.WithConsiderEventsSince(now.Add(-time.Minute))), hatchet.SleepCondition(30*time.Second)))
-			return err
-		})
+		result, err := engine.Execute(ctx.GetContext(), d, input.Run, prepared, interactionWait(ctx, prepared.SessionID))
 		if err != nil {
 			return Output{Prepared: prepared, Result: result}, errors.New("agent execution did not complete")
 		}
