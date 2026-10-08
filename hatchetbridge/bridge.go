@@ -126,7 +126,12 @@ func Register(client *hatchet.Client, engine *orchestration.Engine, definitions 
 			return out, engine.Cleanup(ctx.GetContext(), input.Run, out.Prepared)
 		}, hatchet.WithParents(collect), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(time.Minute))
 	}
-	workflow.OnFailure(func(ctx hatchet.Context, input Input) (map[string]string, error) {
+	workflow.OnFailure(failureHandler(engine, definitions))
+	return workflow
+}
+
+func failureHandler(engine *orchestration.Engine, definitions map[string]orchestration.Definition) func(hatchet.Context, Input) (map[string]string, error) {
+	return func(ctx hatchet.Context, input Input) (map[string]string, error) {
 		if ctx.StepRunErrors()["collect"] != "" {
 			return map[string]string{"status": "retained_until_expiry", "reason": "artifact_export_failed"}, nil
 		}
@@ -137,12 +142,38 @@ func Register(client *hatchet.Client, engine *orchestration.Engine, definitions 
 		input.Run.Key = ctx.WorkflowRunId()
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 45*time.Second)
 		defer cancel()
+		if engine.Artifacts != nil && ctx.StepRunErrors()["provision"] == "" && ctx.StepRunErrors()["cleanup"] == "" {
+			// The DAG operator supplies successful outputs but may omit step errors.
+			var collected Output
+			var prepared orchestration.Prepared
+			var ref string
+			if err := ctx.StepOutput("collect", &collected); err == nil && collected.Artifact != "" && collected.Prepared.SessionID != "" && collected.Prepared.Lease.UID != "" {
+				prepared, ref = collected.Prepared, collected.Artifact
+			} else {
+				var executed Output
+				if ctx.StepOutput("execute", &executed) == nil && executed.Prepared.SessionID != "" {
+					return map[string]string{"status": "retained_until_expiry", "reason": "artifact_export_failed"}, nil
+				}
+				// Failed task outputs are unavailable; provision is the successful parent.
+				if err := ctx.StepOutput("provision", &prepared); err != nil || prepared.SessionID == "" || prepared.Lease.Host == "" || prepared.Lease.UID == "" {
+					return map[string]string{"status": "retained_until_expiry", "reason": "artifact_export_failed"}, nil
+				}
+				var err error
+				ref, err = engine.Collect(cleanup, input.Run, prepared)
+				if err != nil {
+					return map[string]string{"status": "retained_until_expiry", "reason": "artifact_export_failed"}, nil
+				}
+			}
+			if err := engine.Cleanup(cleanup, input.Run, prepared); err != nil {
+				return map[string]string{"status": "cleanup_pending", "reason": "cleanup_failed", "artifact": ref}, nil
+			}
+			return map[string]string{"status": "cleaned", "artifact": ref}, nil
+		}
 		if err := engine.Cancel(cleanup, d, input.Run); err != nil {
 			return nil, errors.New("agent cleanup pending lease expiry")
 		}
 		return map[string]string{"status": "cleaned"}, nil
-	})
-	return workflow
+	}
 }
 
 // NotifyInteraction wakes the owning workflow after an authorized native permission/form reply.
