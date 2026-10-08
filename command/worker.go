@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +73,21 @@ func worker(ctx context.Context) error {
 			defs[name] = d
 		}
 	}
+	namespaces := []string{}
+	tailnetEnabled := os.Getenv("TAILSCALE_CLIENT_ID") != ""
+	for _, d := range defs {
+		namespaces = append(namespaces, d.Namespace)
+		tailnetEnabled = tailnetEnabled || len(d.Tags) > 0
+	}
+	slices.Sort(namespaces)
+	namespaces = slices.Compact(namespaces)
+	var scope string
+	if tailnetEnabled {
+		scope, err = tailnet.NewScope(os.Getenv("AGENT_DEPLOYMENT_ID"), namespaces)
+		if err != nil {
+			return errors.New("AGENT_DEPLOYMENT_ID and configured namespaces required for tailnet ownership")
+		}
+	}
 	config, err := sandbox.Config()
 	if err != nil {
 		return err
@@ -89,7 +105,7 @@ func worker(ctx context.Context) error {
 		defer cancel()
 		_ = tel.Shutdown(flush)
 	}()
-	engine := &orchestration.Engine{Control: control, Telemetry: tel, SecretKey: key, Tailnet: &tailnet.Client{ClientID: os.Getenv("TAILSCALE_CLIENT_ID"), ClientSecret: func(context.Context) (string, error) {
+	engine := &orchestration.Engine{Control: control, Telemetry: tel, SecretKey: key, Tailnet: &tailnet.Client{Scope: scope, ClientID: os.Getenv("TAILSCALE_CLIENT_ID"), ClientSecret: func(context.Context) (string, error) {
 		b, err := os.ReadFile(env("TAILSCALE_CLIENT_SECRET_FILE", "/tailscale/client-secret"))
 		return strings.TrimSpace(string(b)), err
 	}}}
@@ -121,14 +137,6 @@ func worker(ctx context.Context) error {
 	defer stopWorker()
 	g, ctx := errgroup.WithContext(workerCtx)
 	if os.Getenv("TAILSCALE_CLIENT_ID") != "" {
-		namespaces := []string{}
-		seen := map[string]bool{}
-		for _, d := range defs {
-			if !seen[d.Namespace] {
-				seen[d.Namespace] = true
-				namespaces = append(namespaces, d.Namespace)
-			}
-		}
 		g.Go(func() error {
 			tick := time.NewTicker(5 * time.Minute)
 			defer tick.Stop()
@@ -138,10 +146,7 @@ func worker(ctx context.Context) error {
 					return nil
 				case <-tick.C:
 					cleanup, cancel := context.WithTimeout(ctx, 30*time.Second)
-					active, err := control.ActiveClaims(cleanup, namespaces)
-					if err == nil {
-						_ = engine.Tailnet.Reap(cleanup, active)
-					}
+					_ = reapTailnet(cleanup, control, engine.Tailnet, namespaces)
 					cancel()
 				}
 			}
@@ -192,4 +197,13 @@ func runtimeConfig(raw json.RawMessage, secrets map[string]string) (json.RawMess
 		return nil, err
 	}
 	return json.Marshal(out)
+}
+
+// Never pass a partial inventory to the destructive device reaper.
+func reapTailnet(ctx context.Context, control *sandbox.Control, client *tailnet.Client, namespaces []string) error {
+	active, err := control.ActiveClaims(ctx, namespaces)
+	if err != nil {
+		return err
+	}
+	return client.Reap(ctx, active)
 }

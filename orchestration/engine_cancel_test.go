@@ -106,9 +106,14 @@ func TestTaggedRunCleanup(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			req := Request{Key: "tagged-run", SubmittedAt: time.Now()}
 			e, lease := cleanupEngine(t, req, mode != "cancel-partial-provision")
-			hostname := sandbox.ClaimName(req.Key)
+			scope, scopeErr := tailnet.NewScope("test-deployment", []string{lease.Namespace})
+			if scopeErr != nil {
+				t.Fatal(scopeErr)
+			}
+			hostname := (&tailnet.Client{Scope: scope}).Hostname(lease.Claim)
 			var calls []string
 			e.Tailnet = &tailnet.Client{
+				Scope:        scope,
 				ClientSecret: func(context.Context) (string, error) { return "test-secret", nil },
 				HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 					call := req.Method + " " + req.URL.Path
