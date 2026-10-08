@@ -16,6 +16,8 @@ import (
 )
 
 type Client struct {
+	// Scope is produced by NewScope and must stay fixed for the lifetime of this client.
+	Scope        string
 	ClientID     string
 	ClientSecret func(context.Context) (string, error)
 	HTTP         *http.Client
@@ -112,10 +114,14 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 }
 
 var hostnamePattern = regexp.MustCompile(`^ar-[a-f0-9]{32}$`)
+var scopePattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
 var tagPattern = regexp.MustCompile(`^tag:[a-z][a-z0-9-]*$`)
 
-func (c *Client) Issue(ctx context.Context, hostname string, tags []string) (Identity, error) {
-	if hostname == "" || len(tags) == 0 {
+func (c *Client) Issue(ctx context.Context, claim string, tags []string) (Identity, error) {
+	if !scopePattern.MatchString(c.Scope) {
+		return Identity{}, errors.New("valid tailnet ownership scope required")
+	}
+	if !hostnamePattern.MatchString(claim) || len(tags) == 0 {
 		return Identity{}, errors.New("identity requires hostname and policy tags")
 	}
 	found := false
@@ -130,15 +136,23 @@ func (c *Client) Issue(ctx context.Context, hostname string, tags []string) (Ide
 	if !found {
 		return Identity{}, errors.New("sandbox identity tag required")
 	}
+	hostname := c.Hostname(claim)
 	body := map[string]any{"expirySeconds": 300, "description": hostname, "capabilities": map[string]any{"devices": map[string]any{"create": map[string]any{"reusable": false, "ephemeral": true, "preauthorized": true, "tags": tags}}}}
 	out := Identity{Hostname: hostname}
 	err := c.request(ctx, "POST", "tailnet/-/keys", body, &out)
 	return out, err
 }
 func (c *Client) Revoke(ctx context.Context, identity Identity) error {
+	if !scopePattern.MatchString(c.Scope) {
+		return errors.New("valid tailnet ownership scope required")
+	}
 	var keyErr error
 	if identity.ID != "" {
 		keyErr = c.request(ctx, "DELETE", "tailnet/-/keys/"+url.PathEscape(identity.ID), nil, nil)
+	}
+	// A persisted key ID is explicit ownership, but legacy hostnames are ambiguous.
+	if !c.ownsHostname(identity.Hostname) {
+		return keyErr
 	}
 	var list struct {
 		Devices []struct {
@@ -151,7 +165,7 @@ func (c *Client) Revoke(ctx context.Context, identity Identity) error {
 		return errors.Join(keyErr, err)
 	}
 	for _, d := range list.Devices {
-		if d.Hostname != identity.Hostname {
+		if d.ID == "" || d.Hostname != identity.Hostname {
 			continue
 		}
 		for _, tag := range d.Tags {
@@ -164,8 +178,19 @@ func (c *Client) Revoke(ctx context.Context, identity Identity) error {
 	return keyErr
 }
 
-// Reap removes orphaned identities only after the caller has successfully listed all owned claims.
+// Reap removes scoped orphaned devices after a complete inventory of claim names.
+// A nil inventory is unknown; an empty non-nil inventory is a successful empty list.
 func (c *Client) Reap(ctx context.Context, active map[string]bool) error {
+	if !scopePattern.MatchString(c.Scope) || active == nil {
+		return errors.New("reaping requires ownership scope and complete claim inventory")
+	}
+	activeHostnames := make(map[string]bool, len(active))
+	for claim, present := range active {
+		if !hostnamePattern.MatchString(claim) {
+			return errors.New("invalid claim inventory")
+		}
+		activeHostnames[c.Hostname(claim)] = present
+	}
 	var list struct {
 		Devices []struct {
 			ID       string    `json:"id"`
@@ -179,11 +204,11 @@ func (c *Client) Reap(ctx context.Context, active map[string]bool) error {
 	}
 	var result error
 	for _, d := range list.Devices {
-		if active[d.Hostname] || d.Created.IsZero() || time.Since(d.Created) < 5*time.Minute {
+		if activeHostnames[d.Hostname] || d.Created.IsZero() || time.Since(d.Created) < 5*time.Minute {
 			continue
 		}
-		// Only this library's deterministic names are eligible, never other sandbox users.
-		if !hostnamePattern.MatchString(d.Hostname) {
+		// The application tag alone cannot establish deployment ownership.
+		if d.ID == "" || !c.ownsHostname(d.Hostname) {
 			continue
 		}
 		for _, tag := range d.Tags {

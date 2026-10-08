@@ -288,11 +288,20 @@ func consume(ctx context.Context, w watch.Interface, uid types.UID) (*unstructur
 }
 
 func (c *Control) ActiveClaims(ctx context.Context, namespaces []string) (map[string]bool, error) {
+	if len(namespaces) == 0 {
+		return nil, errors.New("claim inventory requires namespaces")
+	}
 	active := map[string]bool{}
 	for _, namespace := range namespaces {
+		if namespace == "" {
+			return nil, errors.New("claim inventory requires explicit namespaces")
+		}
 		list, err := c.API.Resource(Claims).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=agent-runtime"})
 		if err != nil {
 			return nil, err
+		}
+		if list.GetContinue() != "" {
+			return nil, errors.New("incomplete claim inventory")
 		}
 		for _, claim := range list.Items {
 			active[claim.GetName()] = true

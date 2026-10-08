@@ -410,7 +410,11 @@ func (e *Engine) Cleanup(ctx context.Context, req Request, p Prepared) error {
 		}
 		var identityErr error
 		if p.Hostname != "" && e.Tailnet != nil {
-			identityErr = e.Tailnet.Revoke(ctx, tailnet.Identity{ID: p.IdentityID, Hostname: p.Hostname})
+			hostname := p.Hostname
+			if hostname == p.Lease.Claim {
+				hostname = e.Tailnet.Hostname(p.Lease.Claim)
+			}
+			identityErr = e.Tailnet.Revoke(ctx, tailnet.Identity{ID: p.IdentityID, Hostname: hostname})
 		}
 		return errors.Join(e.Control.Delete(ctx, p.Lease), identityErr)
 	})
