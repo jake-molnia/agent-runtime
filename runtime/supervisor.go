@@ -113,7 +113,7 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 	}()
 	// Retain successful state until sandbox deletion so artifact collection can retry.
 	config := filepath.Join(home, "opencode.json")
-	if err := os.WriteFile(config, input.Config, 0600); err != nil {
+	if err := writeRuntimeConfig(home, input.Config); err != nil {
 		return InitResult{}, err
 	}
 	var result InitResult

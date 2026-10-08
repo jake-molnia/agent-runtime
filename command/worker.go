@@ -2,7 +2,6 @@ package command
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -21,57 +20,26 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type definitionConfig struct {
-	AllowProjectConfig bool              `json:"allow_project_config"`
-	Pool               string            `json:"pool"`
-	Namespace          string            `json:"namespace"`
-	Agent              string            `json:"agent"`
-	Model              map[string]string `json:"model"`
-	Directory          string            `json:"directory"`
-	TimeoutSeconds     int               `json:"timeout_seconds"`
-	Tags               []string          `json:"tags"`
-	Config             json.RawMessage   `json:"config"`
-	SecretFiles        map[string]string `json:"secret_files"`
-	Prepare            []string          `json:"prepare"`
-}
-
 func worker(ctx context.Context) error {
-	var configured map[string]definitionConfig
-	data, err := os.ReadFile(env("AGENT_DEFINITIONS_FILE", "/config/agents.json"))
+	catalog, err := loadCatalog()
 	if err != nil {
-		return errors.New("agent definitions unavailable")
+		return err
 	}
-	if err = json.Unmarshal(data, &configured); err != nil {
-		return errors.New("invalid agent definitions")
+	snapshots := env("AGENT_SNAPSHOT_DIR", "/state/definitions")
+	if err := catalog.Save(snapshots); err != nil {
+		return err
 	}
 	key, err := os.ReadFile(env("AGENT_SECRET_KEY_FILE", "/secrets/runtime-key"))
 	if err != nil || len(key) < 32 {
 		return errors.New("runtime secret key must contain at least 32 bytes")
 	}
-	defs := make(map[string]orchestration.Definition, len(configured))
-	for name, cfg := range configured {
-		if cfg.TimeoutSeconds < 1 || cfg.TimeoutSeconds > 86400 || cfg.Pool == "" || cfg.Namespace == "" || cfg.Directory == "" || !json.Valid(cfg.Config) {
-			return errors.New("invalid agent definition")
+	defs := make(map[string]orchestration.Definition, len(catalog.Agents))
+	for name := range catalog.Agents {
+		definition, err := catalog.Resolve(name)
+		if err != nil {
+			return err
 		}
-		defs[name] = orchestration.Definition{AllowProjectConfig: cfg.AllowProjectConfig, Pool: cfg.Pool, Namespace: cfg.Namespace, Agent: cfg.Agent, Model: cfg.Model, Directory: cfg.Directory, Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second, Tags: cfg.Tags,
-			Config: func(secrets map[string]string) (json.RawMessage, error) { return runtimeConfig(cfg.Config, secrets) },
-			Secrets: func(ctx context.Context) (map[string]string, error) {
-				out := map[string]string{}
-				for k, path := range cfg.SecretFiles {
-					b, err := os.ReadFile(path)
-					if err != nil {
-						return nil, errors.New("agent secret unavailable")
-					}
-					out[k] = strings.TrimSpace(string(b))
-				}
-				return out, nil
-			},
-		}
-		if len(cfg.Prepare) > 0 {
-			d := defs[name]
-			d.Prepare = orchestration.Command(cfg.Prepare, "/workspace")
-			defs[name] = d
-		}
+		defs[name] = definition
 	}
 	namespaces := []string{}
 	tailnetEnabled := os.Getenv("TAILSCALE_CLIENT_ID") != ""
@@ -112,17 +80,26 @@ func worker(ctx context.Context) error {
 	if dir := os.Getenv("AGENT_ARTIFACT_DIR"); dir != "" {
 		engine.Artifacts = artifacts.Directory{Root: dir}
 	}
+	for _, agent := range catalog.Agents {
+		if len(agent.Schema) > 0 && engine.Artifacts == nil {
+			return errors.New("structured agents require AGENT_ARTIFACT_DIR")
+		}
+	}
 	client, err := hatchet.NewClient()
 	if err != nil {
 		return err
 	}
 	defer client.Close(context.Background())
-	workflow := hatchetbridge.Register(client, engine, defs)
+	workflows, ingress, closeStore, err := registerWorkflows(ctx, client, engine, catalog, snapshots)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
 	slots, err := strconv.Atoi(env("AGENT_WORKER_SLOTS", "4"))
 	if err != nil || slots < 1 {
 		return errors.New("invalid worker slots")
 	}
-	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(workflow), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots))
+	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(workflows...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots))
 	if err != nil {
 		return err
 	}
@@ -133,6 +110,9 @@ func worker(ctx context.Context) error {
 	worker.Use(instrument.Middleware())
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", tel.Handler)
+	for path, handler := range ingress {
+		mux.Handle(path, handler)
+	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
 	g, ctx := errgroup.WithContext(workerCtx)
@@ -155,48 +135,6 @@ func worker(ctx context.Context) error {
 	g.Go(func() error { return httpServer(ctx, ":9091", mux) })
 	g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
 	return g.Wait()
-}
-
-// Secret placeholders occupy a whole JSON value: {"$secret":"APERTURE_API_KEY"}.
-func runtimeConfig(raw json.RawMessage, secrets map[string]string) (json.RawMessage, error) {
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, err
-	}
-	var resolve func(any) (any, error)
-	resolve = func(v any) (any, error) {
-		switch node := v.(type) {
-		case map[string]any:
-			if name, ok := node["$secret"].(string); ok && len(node) == 1 {
-				secret, found := secrets[name]
-				if !found {
-					return nil, errors.New("configuration secret unavailable")
-				}
-				return secret, nil
-			}
-			for key, item := range node {
-				next, err := resolve(item)
-				if err != nil {
-					return nil, err
-				}
-				node[key] = next
-			}
-		case []any:
-			for i, item := range node {
-				next, err := resolve(item)
-				if err != nil {
-					return nil, err
-				}
-				node[i] = next
-			}
-		}
-		return v, nil
-	}
-	out, err := resolve(value)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(out)
 }
 
 // Never pass a partial inventory to the destructive device reaper.

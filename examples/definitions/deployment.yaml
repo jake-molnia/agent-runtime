@@ -1,0 +1,9 @@
+version: 1
+profiles:
+  review:
+    pool: agent-review
+    namespace: agents
+    directory: /workspace
+    capabilities: [github.diff]
+    secret_files:
+      openai: /secrets/openai-key
