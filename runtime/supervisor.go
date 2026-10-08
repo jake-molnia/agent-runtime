@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -101,10 +102,16 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 	if root == "" {
 		root = "/workspace"
 	}
-	home := filepath.Join(root, ".agent-home")
-	if err := os.MkdirAll(home, 0700); err != nil {
+	home, err := runtimeHome(root)
+	if err != nil {
 		return InitResult{}, err
 	}
+	defer func() {
+		if s.digest == "" {
+			_ = os.RemoveAll(home)
+		}
+	}()
+	// Retain successful state until sandbox deletion so artifact collection can retry.
 	config := filepath.Join(home, "opencode.json")
 	if err := os.WriteFile(config, input.Config, 0600); err != nil {
 		return InitResult{}, err
@@ -194,6 +201,33 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 	result.HarnessSeconds = time.Since(start).Seconds()
 	s.result = result
 	return result, nil
+}
+
+func runtimeHome(root string) (string, error) {
+	workspace, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return "", err
+	}
+	temp, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return "", err
+	}
+	temp, err = filepath.EvalSymlinks(temp)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(workspace, temp)
+	if err != nil {
+		return "", err
+	}
+	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("runtime temporary directory must be outside workspace")
+	}
+	return os.MkdirTemp(temp, "agent-home-")
 }
 
 // ApertureProxy uses a persistent userspace SOCKS transport, avoiding a tailscale nc process per connection.
