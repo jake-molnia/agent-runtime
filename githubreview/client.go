@@ -123,8 +123,8 @@ func (client *Client) request(ctx context.Context, method, endpoint, token strin
 		}
 		return errors.New("GitHub request outcome uncertain")
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
-	if err != nil || len(raw) > 4<<20 {
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<20+1))
+	if err != nil || len(raw) > 64<<20 {
 		return errors.New("invalid or oversized GitHub response")
 	}
 	if err = json.Unmarshal(raw, output); err != nil {

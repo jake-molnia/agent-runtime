@@ -281,3 +281,37 @@ func TestCheckoutTokenOnlyGrantsContentsRead(t *testing.T) {
 		t.Fatalf("%v %v", scopes, err)
 	}
 }
+
+func TestFullReviewPageCanExceedFourMiB(t *testing.T) {
+	input, _ := fixture()
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app":
+			fmt.Fprint(w, `{"id":19,"slug":"reviewer"}`)
+		case "/app/installations/7/access_tokens":
+			fmt.Fprint(w, `{"token":"secret"}`)
+		case "/repos/owner/repo/issues/9/comments":
+			fmt.Fprint(w, `[]`)
+		case "/repos/owner/repo/pulls/9/reviews":
+			if r.URL.Query().Get("page") != "1" {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			body := strings.Repeat("x", 60000)
+			fmt.Fprint(w, "[")
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					fmt.Fprint(w, ",")
+				}
+				fmt.Fprintf(w, `{"id":%d,"body":%q,"commit_id":%q,"user":{"login":"reviewer[bot]","type":"Bot"}}`, i+1, body, input.HeadSHA)
+			}
+			fmt.Fprint(w, "]")
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	reviews, err := client.Reviews(context.Background(), input)
+	if err != nil || len(reviews) != 100 {
+		t.Fatalf("reviews %d: %v", len(reviews), err)
+	}
+}
