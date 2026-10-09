@@ -121,7 +121,7 @@ WORKDIR /data
 RUN python3 /opt/t3/smoke-web.py /opt/t3
 EXPOSE 3773
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "node", "/opt/t3/dist/bin.mjs"]
-CMD ["start", "--host", "0.0.0.0", "--port", "3773", "--no-browser", "--base-dir", "/data/t3"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "3773", "--no-browser", "--base-dir", "/data/t3"]
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS t3-runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \

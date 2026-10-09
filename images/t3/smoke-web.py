@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Boot the bundled central web app with disposable state, without opening a browser."""
 import argparse
+import json
 import os
 from pathlib import Path
 import secrets
@@ -22,8 +23,17 @@ with tempfile.TemporaryDirectory(prefix='t3-web-smoke-') as temporary:
     env = {'PATH': os.environ['PATH'], 'HOME': temporary,
            'AGENT_RUNTIME_URL': 'http://127.0.0.1:9', 'AGENT_RUNTIME_TOKEN': secrets.token_urlsafe(32),
            'T3_MCP_ADVERTISED_URL': 'http://example.invalid'}
+    # A killed container can leave a runtime PID that belongs to an unrelated
+    # process after restart. Interactive `start` refuses it; supervised `serve`
+    # must still acquire the real server lock and boot this retained state.
+    state = Path(temporary) / 'userdata'
+    state.mkdir()
+    (state / 'server-runtime.json').write_text(json.dumps({
+        'version': 1, 'pid': os.getpid(), 'port': port,
+        'origin': f'http://127.0.0.1:{port}', 'startedAt': '2026-10-01T00:00:00Z',
+    }))
     with tempfile.TemporaryFile(mode='w+') as log:
-        process = subprocess.Popen(['node', str(package / 'dist/bin.mjs'), 'start', '--host', '127.0.0.1', '--port', str(port), '--no-browser', '--base-dir', temporary], env=env, stdout=log, stderr=log)
+        process = subprocess.Popen(['node', str(package / 'dist/bin.mjs'), 'serve', '--host', '127.0.0.1', '--port', str(port), '--no-browser', '--base-dir', temporary], env=env, stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 45
             while True:
@@ -34,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='t3-web-smoke-') as temporary:
                     with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=1) as response:
                         html = response.read().decode()
                     assert '<html' in html.lower()
-                    print('Bundled central web served HTML with disposable state.')
+                    print('Bundled central web served HTML despite an unrelated live PID in retained runtime state.')
                     break
                 except OSError:
                     if time.monotonic() > deadline:
