@@ -7,8 +7,7 @@ engineering skills. They contain no Nix environment or T3-specific skill bundle.
 checksums. [`install-skills.py`](../scripts/install-skills.py) downloads those
 archives, verifies them, and preserves supporting files, scripts, and licenses.
 It exposes the selected skills through `/opt/agent-skills` and keeps complete
-source layouts under `/opt/agent-skill-bundles`. Both directories are read-only
-to the container user. `inventory.json` records installed skill names, source
+source layouts under `/opt/agent-skill-bundles`. Files install with read-only modes, but the root agent can modify its own sandbox. `inventory.json` records installed skill names, source
 revisions, and content hashes. `sources.json` records the build lock, and
 `files.json` hashes the supporting source files. Snapshots pin the complete
 manifest digest. Sandbox startup checks files and catalog destinations against
@@ -26,13 +25,12 @@ version: 1
 builtin_skills: [code-review, diagnosing-bugs, pstack-tdd]
 ```
 
-The runtime keeps skill access separate from repository tools. Installing a skill
-does not authorize shell execution, repository writes, GitHub publication, or
-delegation. The selected skill tool and reads under the immutable skill trees are
-permitted. Those reads can also access other bundled instructions; selection is
-not a confidentiality boundary within the bundle. Tools described by a skill must be available through the configured
-runtime and approved MCP connections. Existing config-owned skill text remains
-supported through agent packages.
+Native tools are unrestricted in the sandbox. `builtin_skills` activates and
+pins the bundled catalog; it does not restrict the skill tool to the listed
+names. Supporting references and the whole sandbox filesystem are accessible.
+Installing a skill does not create external APIs or grant server-side access.
+Aperture and trusted publication integrations still own their authorization.
+Existing config-owned skill text remains supported through agent packages.
 
 To verify packaging outside a container:
 

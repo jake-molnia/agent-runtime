@@ -1,1 +1,1 @@
-Input is [original PR context, candidate review]. Independently verify each candidate against the pinned base and head revisions using approved Aperture tools. Keep supported findings and remove disproven claims. Return only the configured JSON report.
+Input is [original PR context, candidate review]. Independently verify each candidate against the pinned base and head in the prepared checkout. Use native tools and Aperture, keep supported findings, and remove disproven claims. Return JSON matching the supplied output schema.

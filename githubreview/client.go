@@ -358,8 +358,15 @@ func (client *Client) legacyComments(ctx context.Context, input Input, token str
 // CheckoutToken grants read-only repository contents access after verifying the canonical identity.
 // The caller must keep this short-lived token out of workflow inputs and persisted artifacts.
 func (client *Client) CheckoutToken(ctx context.Context, input Input) (string, error) {
-	if _, err := client.Canonical(ctx, input); err != nil {
+	current, err := client.Canonical(ctx, input)
+	if err != nil {
 		return "", err
+	}
+	if err := validateCanonical(input, current, true); err != nil {
+		return "", err
+	}
+	if current.State != "open" || current.Draft {
+		return "", errors.New("pull request is not reviewable")
 	}
 	return client.scopedToken(ctx, input, map[string]string{"contents": "read"})
 }

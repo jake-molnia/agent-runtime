@@ -91,7 +91,7 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		if err != nil {
 			return ConfiguredState{}, err
 		}
-		if !json.Valid(input.Input) || len(input.Input) > 1<<20 {
+		if !json.Valid(input.Input) || len(input.Input) > workflows.MaxInputBytes {
 			return ConfiguredState{}, errors.New("bounded JSON workflow input required")
 		}
 		service, err := configuredService(plan, executor, store)

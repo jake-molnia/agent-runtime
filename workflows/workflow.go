@@ -17,7 +17,7 @@ import (
 )
 
 const MaxSteps = 32
-const MaxInputBytes = 1 << 20
+const MaxInputBytes = 4 << 20
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
@@ -237,10 +237,13 @@ func ResolveInput(step Step, initial json.RawMessage, parents map[string]json.Ra
 	if !step.Input.Multiple {
 		return values[0], nil
 	}
-	data, err := json.Marshal(values)
-	if err != nil {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(values); err != nil {
 		return nil, err
 	}
+	data := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
 	if len(data) > MaxInputBytes {
 		return nil, fmt.Errorf("resolved input exceeds %d bytes", MaxInputBytes)
 	}
