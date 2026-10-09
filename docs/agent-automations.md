@@ -216,7 +216,7 @@ go test ./...
 go test -race ./definitions ./workflows ./hatchetbridge ./agentexec ./command
 go vet ./...
 make build
-AGENT_RUNTIME_TEST_OPENCODE_BINARY=/absolute/path/to/opencode2 \
+AGENT_RUNTIME_TEST_OPENCODE_BINARY=/absolute/path/to/opencode \
   go test ./command -run '^TestOpenCodeNative' -count=1 -v
 ```
 

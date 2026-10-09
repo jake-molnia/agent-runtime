@@ -149,6 +149,10 @@ func (service *Service) validateParts(parts []Part, contracts []Contract) error 
 			}
 		}
 		if part.Kind == Data {
+			// Data occupies depth 3 in the stored message envelope.
+			if err := checkJSON(json.NewDecoder(bytes.NewReader(part.Data)), 3); err != nil {
+				return fmt.Errorf("invalid data part %q: %w", part.Name, err)
+			}
 			validator := service.validators[part.Schema]
 			if validator == nil {
 				return errors.New("unknown data schema")

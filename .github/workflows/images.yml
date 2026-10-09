@@ -82,7 +82,7 @@ jobs:
               touch /root/agent-runtime-root-check
               git --version
               python3 --version
-              opencode2 --version
+              opencode --version
               agent-runtime version
             '
           else

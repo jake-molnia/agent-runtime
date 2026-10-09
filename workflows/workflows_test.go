@@ -356,6 +356,25 @@ func TestStorageConcurrentAndCorrupt(t *testing.T) {
 	}
 }
 
+func TestLoadWithAbandonedSnapshotTemporaryFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "review.yaml", userYAML)
+	writeFile(t, root, ".snapshot-interrupted", "partial snapshot")
+	if err := Save(root, captured(t)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(root, fixtureCatalog())
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("abandoned snapshot blocked manifest loading: %v", err)
+	}
+	if err := os.Symlink("review.yaml", filepath.Join(root, "workflows", ".snapshot-link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root, fixtureCatalog()); err == nil {
+		t.Fatal("snapshot temporary symlink accepted")
+	}
+}
+
 func TestUnsafePathsAndOptionalDirectory(t *testing.T) {
 	empty, err := Load(t.TempDir(), nil)
 	if err != nil || empty == nil || len(empty) != 0 {
