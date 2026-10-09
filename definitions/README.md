@@ -196,15 +196,18 @@ value, and validates it against the compiled schema. It fails if no schema exist
 an atomic exclusive hard link, and a directory synchronization. Saving the
 same snapshot again succeeds; corrupt existing snapshots are never overwritten.
 
+The checked-in [harness config](../harnesses/opencode.json) is the compiler base.
+Its digest is pinned in each snapshot and checked before compilation.
+
 The SHA-256 digest includes the agent settings, instructions, skill content,
 schema, resolved profile, credential binding paths, and compiler policy version.
 Selected MCP URLs, tool authorization mode, explicit lists, and any bundled skill
 manifest digest are included; unselected registry entries are
 excluded. Every new snapshot carries the explicit
-`opencode-v2.0.26:authored-primary:sandbox-unrestricted:schema-system:v5` policy.
+`opencode-v2.0.26:authored-primary:sandbox-unrestricted:repo-harness-config:schema-system:v6` policy.
 Earlier policies are rejected instead of silently widening their permissions or
 changing their prompts. Before upgrading, drain old runs using their original
-worker, then reload the source definitions to create v5 snapshots. Persisted old
+worker, then reload the source definitions to create v6 snapshots. Persisted old
 runs cannot be resumed by the new worker.
 The digest excludes credential file contents. JSON formatting and object-key ordering
 do not affect it. Credential rotation does not change the digest.

@@ -42,6 +42,7 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 		{"catalog_revoked", "broker_revoked_tool", true, false},
 		{"catalog_other_server", "unused_dangerous_tool", true, false},
 		{"catalog_shell", "shell", true, false},
+		{"repeated_shell", "shell", true, false},
 		{"catalog_read", "read", true, false},
 		{"catalog_write", "write", true, false},
 		{"builtin_skill", "skill", true, true},
@@ -155,7 +156,8 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 				mutex.Lock()
 				advertised = append(advertised, names)
 				observedProviderBodies = append(observedProviderBodies, string(body))
-				first := len(advertised) == 1
+				round := len(advertised)
+				first := round == 1 || (scenario.name == "repeated_shell" && round <= 5)
 				mutex.Unlock()
 				writer.Header().Set("Content-Type", "text/event-stream")
 				delta := map[string]any{"role": "assistant"}
@@ -178,12 +180,16 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 							arguments = string(encoded)
 						}
 					}
+					if scenario.name == "repeated_shell" {
+						encoded, _ := json.Marshal(map[string]string{"command": "printf x >> native-write", "workdir": workspace})
+						arguments = string(encoded)
+					}
 					if scenario.name == "builtin_reference" {
 						path := filepath.Join(filepath.Dir(skillDirectory), "bundles", "pstack", "pstack", "skills", "architect", "references", "runner-prompt.md")
 						encoded, _ := json.Marshal(map[string]string{"path": path})
 						arguments = string(encoded)
 					}
-					delta["tool_calls"] = []any{map[string]any{"index": 0, "id": "call_mcp", "type": "function", "function": map[string]string{"name": attempted, "arguments": arguments}}}
+					delta["tool_calls"] = []any{map[string]any{"index": 0, "id": fmt.Sprintf("call_mcp_%d", round), "type": "function", "function": map[string]string{"name": attempted, "arguments": arguments}}}
 					finish = "tool_calls"
 				} else {
 					delta["content"] = answer
@@ -355,6 +361,12 @@ profiles:
 				if attempted == "shell" || attempted == "write" {
 					if _, err := os.Stat(filepath.Join(workspace, "native-write")); err != nil {
 						t.Errorf("native tool failed to write workspace: %v", err)
+					}
+				}
+				if scenario.name == "repeated_shell" {
+					data, err := os.ReadFile(filepath.Join(workspace, "native-write"))
+					if err != nil || string(data) != "xxxxx" {
+						t.Errorf("repeated shell was interrupted: %q %v", data, err)
 					}
 				}
 				if attempted == "read" && scenario.name != "builtin_reference" && !strings.Contains(strings.Join(observedProviderBodies, "\n"), "WORKSPACE_READ_SENTINEL") {

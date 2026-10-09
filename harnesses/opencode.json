@@ -1,0 +1,17 @@
+{
+  "permissions": [
+    { "action": "*", "resource": "*", "effect": "allow" }
+  ],
+  "agents": {
+    "authored": {
+      "mode": "primary",
+      "permissions": [
+        { "action": "*", "resource": "*", "effect": "allow" }
+      ]
+    }
+  },
+  "experimental": {
+    "portable_shell_scanner": false,
+    "policies": []
+  }
+}

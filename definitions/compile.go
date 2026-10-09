@@ -9,14 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jake-molnia/agent-runtime/harnesses"
 	"github.com/jake-molnia/agent-runtime/orchestration"
 )
-
-type permission struct {
-	Action   string `json:"action"`
-	Resource string `json:"resource"`
-	Effect   string `json:"effect"`
-}
 
 func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 	if err := snapshot.verify(); err != nil {
@@ -72,10 +67,17 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 		return secrets, nil
 	}
 	definition.Config = func(secrets map[string]string) (json.RawMessage, error) {
-		config := map[string]any{}
+		config, err := harnesses.OpenCode()
+		if err != nil {
+			return nil, err
+		}
 		if len(profile.Config) > 0 {
-			if err := json.Unmarshal(profile.Config, &config); err != nil {
+			var deployment map[string]any
+			if err := json.Unmarshal(profile.Config, &deployment); err != nil {
 				return nil, err
+			}
+			for key, value := range deployment {
+				config[key] = value
 			}
 		}
 		resolved, err := resolveSecrets(config, profile.SecretFiles, secrets)
@@ -83,7 +85,6 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 			return nil, err
 		}
 		config = resolved.(map[string]any)
-		permissions := []permission{{Action: "*", Resource: "*", Effect: "allow"}}
 		if len(agent.BuiltinSkills) > 0 {
 			config["skills"] = []string{"/opt/agent-skills"}
 		}
@@ -100,10 +101,11 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 		if len(servers) > 0 {
 			config["mcp"] = map[string]any{"servers": servers}
 		}
-		config["permissions"] = permissions
-		agents := map[string]any{"authored": map[string]any{
-			"system": system, "description": agent.Description, "mode": "primary", "permissions": permissions,
-		}}
+		agents := config["agents"].(map[string]any)
+		authored := agents["authored"].(map[string]any)
+		authored["system"] = system
+		authored["description"] = agent.Description
+
 		if len(servers) > 0 || len(agent.BuiltinSkills) > 0 {
 			agents["title"] = map[string]any{"disabled": true}
 		}

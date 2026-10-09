@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home worker
 COPY --from=build /out/agent-runtime /usr/local/bin/agent-runtime
+COPY harnesses/opencode.json /etc/agent-runtime/harnesses/opencode.json
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles
 COPY --from=skills /opt/agent-skills /opt/agent-skills
 USER 1000:1000
@@ -39,7 +40,10 @@ COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles
 COPY --from=skills /opt/agent-skills /opt/agent-skills
-ENV HOME=/root SANDBOX_ROOT=/workspace
+COPY harnesses/opencode.json /etc/agent-runtime/harnesses/opencode.json
+ENV HOME=/root SANDBOX_ROOT=/workspace \
+    OPENCODE_CONFIG=/etc/agent-runtime/harnesses/opencode.json \
+    OPENCODE_DISABLE_PROJECT_CONFIG=1
 USER 0:0
 WORKDIR /workspace
 EXPOSE 8080 8081 4096 9090

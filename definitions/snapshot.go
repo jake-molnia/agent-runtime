@@ -14,19 +14,21 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jake-molnia/agent-runtime/harnesses"
 	runtimeapi "github.com/jake-molnia/agent-runtime/runtime"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type Snapshot struct {
-	SkillBundleDigest string               `json:"skill_bundle_digest,omitempty"`
-	Agent             Agent                `json:"agent"`
-	Profile           Profile              `json:"profile"`
-	MCPServers        map[string]MCPServer `json:"mcp_servers,omitempty"`
-	CompiledPolicy    string               `json:"compiled_policy,omitempty"`
+	HarnessConfigDigest string               `json:"harness_config_digest"`
+	SkillBundleDigest   string               `json:"skill_bundle_digest,omitempty"`
+	Agent               Agent                `json:"agent"`
+	Profile             Profile              `json:"profile"`
+	MCPServers          map[string]MCPServer `json:"mcp_servers,omitempty"`
+	CompiledPolicy      string               `json:"compiled_policy,omitempty"`
 }
 
-const compiledPolicy = "opencode-v2.0.26:authored-primary:sandbox-unrestricted:schema-system:v5"
+const compiledPolicy = "opencode-v2.0.26:authored-primary:sandbox-unrestricted:repo-harness-config:schema-system:v6"
 
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	agent, exists := catalog.Agents[name]
@@ -37,7 +39,7 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	if !exists {
 		return Snapshot{}, fmt.Errorf("agent %s: unknown profile: %s", name, agent.Execution.Profile)
 	}
-	snapshot := Snapshot{Agent: agent, Profile: profile, CompiledPolicy: compiledPolicy}
+	snapshot := Snapshot{Agent: agent, Profile: profile, CompiledPolicy: compiledPolicy, HarnessConfigDigest: harnesses.OpenCodeDigest()}
 	for _, name := range agent.MCP {
 		server, exists := catalog.MCPServers[name]
 		if !exists {
@@ -94,6 +96,9 @@ func (snapshot Snapshot) ValidateOutput(output json.RawMessage) error {
 }
 
 func (snapshot Snapshot) validate() error {
+	if snapshot.HarnessConfigDigest != harnesses.OpenCodeDigest() {
+		return errors.New("harness configuration differs from pinned snapshot; use the matching worker image or reload definitions")
+	}
 	agent := snapshot.Agent
 	if err := validateMCPReferences(agent.BuiltinSkills); err != nil {
 		return fmt.Errorf("builtin_skills: %w", err)
@@ -117,7 +122,7 @@ func (snapshot Snapshot) validate() error {
 		return errors.New("skill bundle digest without selected skills")
 	}
 	if snapshot.CompiledPolicy != compiledPolicy {
-		return errors.New("unsupported compiled policy: drain old runs with their original worker, then reload definitions for sandbox-unrestricted v5")
+		return errors.New("unsupported compiled policy: drain old runs with their original worker, then reload definitions for sandbox-unrestricted v6")
 	}
 	for _, name := range agent.MCP {
 		if _, exists := snapshot.MCPServers[name]; !exists {

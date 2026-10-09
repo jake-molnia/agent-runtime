@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+type permission struct {
+	Action   string `json:"action"`
+	Resource string `json:"resource"`
+	Effect   string `json:"effect"`
+}
+
 const agentYAML = `version: 1
 description: Review pull requests
 model:
@@ -440,5 +446,16 @@ func TestConcurrentSnapshotSave(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(root, "snapshots"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("snapshot files: %v %v", entries, err)
+	}
+}
+
+func TestSnapshotPinsHarnessConfig(t *testing.T) {
+	snapshot, err := loaded(t, fixture(t)).Snapshot("reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.HarnessConfigDigest = strings.Repeat("a", 64)
+	if _, err = snapshot.Definition(); err == nil || !strings.Contains(err.Error(), "harness configuration") {
+		t.Fatalf("changed harness config accepted: %v", err)
 	}
 }

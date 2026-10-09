@@ -54,3 +54,6 @@ The images include [pinned engineering skills](docs/sandbox-skills.md).
 See [container releases](docs/releases.md) for versioned and nightly GHCR images,
 and [config worker replacement](docs/config-runtime-replacement.md) for the current
 integration and deployment gaps.
+
+Sandbox harness defaults are checked in under [harnesses](harnesses/README.md)
+and copied into the images. OpenCode runs with unrestricted tool permissions.
