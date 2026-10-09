@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font:14px/1.5 var(--font-sans,system-ui);color:var(--foreground);margin:0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{border:1px solid var(--border,#888);border-radius:12px;padding:16px}.card p{margin:8px 0 0;color:var(--muted-foreground)}.wide{grid-column:1/-1}strong{font-size:15px}small{display:block;color:var(--muted-foreground);margin-top:6px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.line{padding:9px 0;color:var(--muted-foreground);text-align:center}.sandboxes{display:grid;grid-template-columns:1fr 1fr;gap:12px}.child{border-left:3px solid var(--chart-2,#589);padding-left:10px;margin-top:8px}.chip{display:inline-block;border-radius:6px;padding:2px 7px;background:var(--secondary);font-size:12px}.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:20px 0 10px}button{font:inherit;font-size:13px;padding:8px 11px;border:1px solid var(--border);border-radius:8px;background:var(--secondary);color:var(--foreground);cursor:pointer}button[aria-pressed=true]{background:var(--primary);color:var(--primary-foreground)}#scenario{padding:16px;border-radius:12px;background:var(--secondary);min-height:110px}#scenario p{margin:7px 0 0}details{border-top:1px solid var(--border);padding:11px 0}summary{cursor:pointer;font-weight:600}details p{margin:8px 0;color:var(--muted-foreground)}a{color:var(--primary)}.foot{margin:14px 0;color:var(--muted-foreground);font-size:12px}@media(max-width:480px){.grid,.sandboxes{grid-template-columns:1fr}.wide{grid-column:auto}}
+</style></head><body>
+<div class="grid">
+ <div class="card"><strong>T3 · persistent application</strong><p>Conversation identity, events, approvals, MCP, schedules and UI.</p><small>Existing SQLite + complete T3 data directory on one PVC.</small></div>
+ <div class="card"><strong>agent-runtime + Hatchet</strong><p>Durable lifecycle requests, resource creation, readiness, stop and release.</p><small>Existing Go runtime, extended with T3-specific workflows.</small></div>
+</div>
+<div class="line">T3 sends execution commands directly to workers · Hatchet manages their lifecycle</div>
+<div class="sandboxes">
+ <div class="card"><div class="row"><strong>Sandbox A</strong><span class="chip">Workspace A</span></div><p>Top-level conversation A</p><div class="child">Subagent A1<br>Subagent A2 → grandchild A2.1</div><small>Distinct thread + MCP identities. Shared execution and retained volume.</small></div>
+ <div class="card"><div class="row"><strong>Sandbox B</strong><span class="chip">Workspace B</span></div><p>Top-level conversation B</p><div class="child">Independent checkout<br>Independent processes</div><small>Same paths and ports can exist without selecting the wrong workspace.</small></div>
+</div>
+<div class="tabs" role="group" aria-label="Inspect lifecycle behavior">
+<button data-key="root" aria-pressed="true">New conversation</button><button data-key="child" aria-pressed="false">Delegate</button><button data-key="idle" aria-pressed="false">Wait / idle</button><button data-key="restart" aria-pressed="false">Restart</button><button data-key="settle" aria-pressed="false">Settle</button>
+</div>
+<div id="scenario" aria-live="polite"></div>
+<div class="foot">Source-backed design proposal. Resource and recovery behavior still requires integration testing.</div>
+<details><summary>Boundary blocker · MCP points at the wrong host</summary><p>The current registry advertises loopback and retains credentials in memory. A worker-local, session-scoped forwarding endpoint must support central reauthorization, ACP stdio bridging and callback correlation. Changing only the hostname is insufficient.</p></details>
+<details><summary>Storage blocker · deleting a sandbox can delete its generated PVC</summary><p>Start with separately owned retained PVCs referenced by direct Agent Sandbox resources. Generated volume-claim templates and claim expiry Retain do not establish the required lifetime. Warm-pool adoption needs a separate storage proof.</p></details>
+<details><summary>Correctness blocker · retrying a checkpoint can rewrite history</summary><p>Current capture unconditionally updates the hidden Git ref. A response lost after capture can make a retry store later edits under the same checkpoint. Capture must return the original immutable result for the same operation.</p></details>
+<script>
+const cases={
+ root:["One stable identity, replaceable compute","T3 commits the thread and workspace binding. Its outbox asks agent-runtime for execution. Hatchet ensures storage and a current worker, then T3 starts the provider. Neither the browser nor the agent chooses a machine."],
+ child:["Inherit placement, preserve identity","Central delegation creates the normal child thread and provider session, then inherits its parent’s workspace binding. Nested children stay in that sandbox. Explicitly launching a separate top-level thread creates another allocation."],
+ idle:["Safe idle applies to the entire workspace","A completed parent is insufficient if children, approvals, scripts or terminal commands are active. Agent Sandbox suspension terminates the pod. A live callback blocks safe suspension; a future central schedule does not."],
+ restart:["Two failures require different recovery","Central T3 restart: reconnect to the same worker incarnation, renew MCP authority, and replay committed events. Worker restart: process callbacks and PTYs are gone; mark interrupted work honestly and resume from retained native files."],
+ settle:["Release compute after the drain barrier","Wait for child work, settle scripts and required persistence. Stop new side-effect admission before resource deletion. Retain the workspace volume and conversation. A racing message either cancels the drain or waits for replacement compute."]
+};
+function show(key){const el=document.getElementById("scenario");el.replaceChildren();const title=document.createElement("strong");title.textContent=cases[key][0];const p=document.createElement("p");p.textContent=cases[key][1];el.append(title,p);document.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.key===key)));}
+document.querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>show(b.dataset.key)));show("root");
+console.assert(document.querySelectorAll("button").length===5,"Missing scenario");
+console.assert(Object.values(cases).every(v=>v.length===2),"Malformed scenario");
+console.log("Five lifecycle scenarios loaded; no network dependencies.");
+</script></body></html>
