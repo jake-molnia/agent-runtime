@@ -327,6 +327,15 @@ func TestLegacySnapshotDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reconstruct the pre-base-tag snapshot; fresh deployment files now require the base tag.
+	snapshot.Profile.Tags = []string{"tag:review"}
+	snapshot.Agent.Digest, err = snapshot.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshot.Definition(); err != nil {
+		t.Fatal(err)
+	}
 	if snapshot.Agent.Digest != "fbaa71205ddceaa92966001ac2c129a5345c2ac2cbad12955aa82464a7dc733a" {
 		t.Fatalf("legacy snapshot digest changed: %s", snapshot.Agent.Digest)
 	}

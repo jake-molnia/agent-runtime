@@ -18,7 +18,10 @@ import (
 // Run executes the runtime supervisor or Hatchet worker with the caller's shutdown context.
 func Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agent-runtime serve|worker|version|agents|workflows|run|submit")
+		return errors.New("usage: agent-runtime serve|worker|version|agents|workflows|run|submit|reviews")
+	}
+	if args[0] == "reviews" {
+		return reviewsCommand(ctx, args[1:])
 	}
 	if args[0] == "agents" {
 		return agentsCommand(args[1:])

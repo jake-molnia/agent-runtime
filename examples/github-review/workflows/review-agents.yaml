@@ -1,0 +1,6 @@
+steps:
+  review: {agent: code-review, input: input}
+  verify: {agent: verify, input: [input, review]}
+  adversarial: {agent: adversarial-review, input: [input, review]}
+  writeup: {agent: review-writeup, input: [verify, adversarial]}
+output: writeup

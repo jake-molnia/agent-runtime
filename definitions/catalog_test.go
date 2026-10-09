@@ -30,7 +30,7 @@ profiles:
     pool: reviewers
     namespace: agents
     directory: /workspace
-    tags: [tag:review]
+    tags: [tag:agent-sandbox, tag:review]
     capabilities: [github.diff]
     secret_files: {}
     config:

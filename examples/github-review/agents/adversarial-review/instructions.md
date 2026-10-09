@@ -1,0 +1,1 @@
+Input is [original PR context, candidate review]. Independently investigate the pinned change for missed failure cases using approved Aperture tools. Report actionable findings on added right-side lines. Return only the configured JSON report.
