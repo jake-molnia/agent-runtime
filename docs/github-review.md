@@ -38,13 +38,16 @@ and `explanation`. The schemas in the example define the bounds.
 The writer must cover every source index exactly once. Trusted code reads the
 actual candidate step messages, verifies their workflow/agent/reply identities,
 and retains the first source's location and highest priority in each group.
-It then validates locations against added right-side diff lines. Candidate arrays
+It posts findings on context or added lines inline. Other locations, missing
+patches, and truncated patches become links in the review body. Large review
+bodies are split into persisted, individually reconciled parts. Candidate arrays
 copied into writer output do not become authoritative evidence.
 
-The adapter uses a persisted resolve task, a durable child workflow, and a
-trusted publish task. Hatchet serializes the entire parent run per PR and applies
-30-day admission deduplication. This reuses Hatchet's scheduling and recovery
-instead of adding a separate controller and submission outbox.
+A stable ingress applies 30-day admission deduplication and serializes each PR.
+It dispatches to an immutable revision-specific adapter with required worker
+labels. The adapter resolves current PR identity, runs the configured graph as
+a durable child, reduces sources, and publishes. Original workflow names remain
+the CLI interface; scheduler action names include revision identity.
 
 ## Mount integration credentials
 
@@ -57,8 +60,16 @@ Set these variables only on workers running the integration:
   `POST /webhooks/github` on port 9091.
 
 The existing publication store initializes its table and uses PostgreSQL advisory
-locks. GitHub credentials stay on the trusted worker. Agents receive canonical PR
-identity and diff context as `{"review": ..., "prompt": ...}`.
+locks. App signing keys and publication credentials stay on the worker. Before
+each agent starts, the worker uses a short-lived repository-scoped contents-read
+token to fetch the exact base and head into that profile's `directory`. The agent
+starts at detached HEAD. Temporary askpass files are removed before execution;
+credentials are absent from Git configuration and workflow input.
+
+Set the profile directory to an empty path such as `/workspace/checkout`. Agents
+receive factual PR identity as `{"review": ..., "prompt": ...}` and investigate
+through native tools in the checkout. The base is refreshed when the review
+resolves. Later base-branch movement does not invalidate an unchanged PR head.
 
 ## Choose event ingress
 
@@ -68,10 +79,11 @@ draft/closed PRs before scheduling, and submits with required worker labels.
 Configure the ingress and secret in the config repo.
 
 Alternatively, set `native_events: true` to subscribe through Hatchet's existing
-authenticated `github:pull_request:*` event ingress. Omit `worker_labels` in that
-mode: the pinned Go SDK cannot apply required placement labels to native event
-registration. The loader rejects that combination. Native and signed-webhook
-routes use the same PR/head deduplication identity.
+authenticated `github:pull_request:*` event ingress. The lightweight ingress
+dispatches to the adapter with `worker_labels`, so native events retain explicit
+placement. Native and signed-webhook routes share the same PR/head deduplication
+identity. When deploying to multiple clusters, enable native subscriptions on
+only the intended ingress or use an explicit event routing policy.
 
 For a manual dry-run:
 
@@ -90,10 +102,17 @@ Hatchet credentials and integration configuration; App/database credentials are
 needed by the worker. Arbitrary per-request model or effort overrides are not
 accepted; choose trusted config-defined plans.
 
-Publication reloads repository policy and checks the current PR revision. Removed
-repositories, dry runs, and stale PRs do not publish. The existing publisher
-reconciles duplicate and uncertain writes before attempting another GitHub review.
-Admission deduplication and publication reconciliation are separate checks.
+Repository policy and canonical head are checked before every stage and every
+15 seconds during active work. Obsolete stages and their child runs are cancelled.
+Out-of-order webhooks cannot blindly cancel a current review. Publication rechecks
+policy and current head. Removed repositories, dry runs, and stale PRs do not
+publish. Completion recognizes the previous config worker's review and issue-comment
+markers and is keyed by PR head, independent of graph revision.
+
+Publication persists the exact request plan and reconciles each part after a lost
+response. An uncertain request is never blindly reposted. If GitHub never exposes
+its result, the operator must investigate the durable record before retrying.
+Admission deduplication and publication reconciliation remain separate checks.
 
 ## Keep production policy in config
 
@@ -102,9 +121,15 @@ Tailscale tags, Aperture backends, secrets, storage, Kubernetes resources, and F
 configuration in your config repo. This repository owns the reusable integration
 and GHCR images, including the pinned skill bundle. It has no Depot dependency.
 
-Use a separate workflow name and pool for staging. Drain runs before changing
-integration configuration or graph topology, or retain compatible workers.
-Persisted runs fail closed if the worker's integration/plan revision differs.
+Use a separate workflow name and pool for staging. Revision-specific action
+names prevent old tasks from landing on new incompatible workers. Retain old
+workers until their runs drain; referenced snapshots, messages, and compatible
+skill images must remain available. The v5 unrestricted compiler migration itself
+requires draining older compiler-policy runs with their original worker.
 Test durable child cancellation/replay and TTL idempotency against your deployed
 Hatchet version before cutting over. Unit tests cover SDK callback execution and
 policy checks; they do not prove production server compatibility.
+
+Worker health endpoints on port 9091 are `/healthz` for process liveness,
+`/startupz` after the first confirmed scheduler registration, and `/readyz` for a
+fresh ACTIVE Hatchet heartbeat belonging to this exact worker process.

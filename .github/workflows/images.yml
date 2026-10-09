@@ -71,6 +71,26 @@ jobs:
             type=ref,event=pr
             type=ref,event=tag
             type=semver,pattern={{version}}
+      - name: Check the native container target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          docker buildx build --load --platform linux/amd64 --target "$TARGET" --tag "agent-runtime-check:$TARGET" .
+          if [[ "$TARGET" == sandbox ]]; then
+            docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
+              test "$(id -u)" -eq 0
+              touch /root/agent-runtime-root-check
+              git --version
+              python3 --version
+              opencode2 --version
+              agent-runtime version
+            '
+          else
+            docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
+              test "$(id -u)" -eq 1000
+              agent-runtime version
+            '
+          fi
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
         with:

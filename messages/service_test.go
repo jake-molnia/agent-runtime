@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/jake-molnia/agent-runtime/workflows"
 )
 
 type testResult struct {
@@ -261,5 +263,47 @@ func TestReceiveRestoresDataAndChecksRecipient(t *testing.T) {
 	message.ContextID = "another-context"
 	if _, err := service.Publish(ctx, "scope", message); err == nil {
 		t.Fatal("cross-context reply accepted")
+	}
+}
+
+func TestLargeJoinedReportsSurviveMessageAndPrompt(t *testing.T) {
+	for _, character := range []string{"x", "<"} {
+		t.Run(character, func(t *testing.T) {
+			report := `{"summary":"` + strings.Repeat(character, (1<<20)-100) + `","findings":[],"limitations":"none"}`
+			data, err := workflows.ResolveInput(workflows.Step{Input: workflows.InputRefs{Sources: []string{"verify", "adversarial"}, Multiple: true}}, nil, map[string]json.RawMessage{"verify": json.RawMessage(report), "adversarial": json.RawMessage(report)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			service, err := New(Directory{Root: t.TempDir()}, map[string]Validator{"reports": func(raw json.RawMessage) error {
+				if !json.Valid(raw) {
+					return errors.New("invalid JSON")
+				}
+				return nil
+			}}, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := sampleMessage()
+			message.Parts = []Part{{Name: "reports", Kind: Data, Schema: "reports", Data: data}}
+			ref, err := service.Publish(context.Background(), "run", message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery, err := service.Receive(context.Background(), "run", ref, message.To)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := delivery.Prompt()
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := strings.Index(prompt, "{")
+			var decoded struct {
+				Message Message `json:"message"`
+			}
+			if start < 0 || json.Unmarshal([]byte(prompt[start:]), &decoded) != nil || string(decoded.Message.Parts[0].Data) != string(data) {
+				t.Fatal("report data changed through prompt")
+			}
+		})
 	}
 }

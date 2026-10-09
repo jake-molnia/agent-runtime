@@ -14,11 +14,16 @@ import (
 
 const MaxOutputBytes = 1 << 20
 
+// Transcript pages include tool history and JSON-escaped final text.
+const MaxTranscriptBytes = 64 << 20
+
 type outputMessage struct {
 	ID      string          `json:"id"`
 	Type    string          `json:"type"`
 	Finish  string          `json:"finish"`
 	Outcome string          `json:"outcome"`
+	Status  string          `json:"status"`
+	Reason  string          `json:"reason"`
 	Error   json.RawMessage `json:"error"`
 	Retry   json.RawMessage `json:"retry"`
 	Time    struct {
@@ -40,8 +45,8 @@ type outputPage struct {
 
 func decodeOutputPage(data []byte) (outputPage, error) {
 	var page outputPage
-	if len(data) > MaxOutputBytes {
-		return page, errors.New("OpenCode output exceeds 1 MiB")
+	if len(data) > MaxTranscriptBytes {
+		return page, errors.New("OpenCode transcript exceeds 64 MiB")
 	}
 	if err := json.Unmarshal(data, &page); err != nil {
 		return page, errors.New("invalid OpenCode V2 message response")
@@ -101,7 +106,11 @@ func parseOutputMessages(messages []outputMessage, promptID string) (json.RawMes
 				return nil, errors.New("OpenCode run is failed, interrupted, or ambiguous")
 			}
 			idle = true
-		case "user", "shell", "compaction":
+		case "compaction":
+			if final == nil || message.Status != "completed" || message.Reason != "auto" {
+				return nil, errors.New("OpenCode compaction is incomplete or not automatic")
+			}
+		case "user", "shell":
 			return nil, errors.New("OpenCode output does not unambiguously belong to this prompt")
 		case "assistant":
 			if len(message.Error) != 0 || len(message.Retry) != 0 || message.Time.Completed == nil || *message.Time.Completed < *message.Time.Created {
@@ -131,7 +140,7 @@ func (e *Engine) ReadOutput(ctx context.Context, req Request, prepared Prepared)
 	if err != nil {
 		return nil, err
 	}
-	remaining := int64(MaxOutputBytes)
+	remaining := int64(MaxTranscriptBytes)
 	query := url.Values{"order": {"desc"}, "limit": {"50"}}
 	var messages []outputMessage
 	cursors := make(map[string]bool)
@@ -149,7 +158,7 @@ func (e *Engine) ReadOutput(ctx context.Context, req Request, prepared Prepared)
 		}
 		remaining -= int64(len(data))
 		if remaining < 0 {
-			return nil, errors.New("OpenCode output exceeds 1 MiB")
+			return nil, errors.New("OpenCode transcript exceeds 64 MiB")
 		}
 		page, err := decodeOutputPage(data)
 		if err != nil {

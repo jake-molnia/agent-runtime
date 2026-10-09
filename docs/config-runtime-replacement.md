@@ -1,99 +1,84 @@
 # Config worker replacement status
 
-The runtime now includes an optional trusted PR integration, an Aperture-managed
-MCP catalog mode, and pinned engineering skills in its GHCR images. Production
-replacement still requires config-owned deployment changes and a staging run.
-It is not yet an image-only swap.
+The runtime PR stack restores the reviewed behavior gaps and adds native root
+execution in disposable sandboxes. The config migration is a separate suspended
+draft. Publishing images and activating the deployment are separate steps.
 
-The baseline comparison used config `main` at
-[`a1cc652`](https://github.com/jake-molnia/config/tree/a1cc652afa6e995a2e714277b361e371a83137c0)
-and agent-runtime `48026c40886c0cd991ac6e8979dfe68ed60cead3` on 2026-10-09.
-The additions below are in the current working branch. Config findings describe
-checked-in desired state, not live-cluster observations.
+The comparison used config `fbc7a7897a6a0154b9afacb517cc86ee65f7e3d3`
+and runtime `114ead1430bc89273196f5ceb678e77666ea22ef`. The fixes below extend that
+baseline. The config findings describe desired state, not a live-cluster inspection.
 
-## Runtime support added
+## Runtime fixes
 
-The [optional PR integration](github-review.md) provides event normalization,
-repository/installation authorization, 30-day admission deduplication, per-PR
-concurrency, required placement for manual/signed-webhook submissions, durable
-execution of a config-owned graph, trusted source-index reduction, and publication.
-It reuses the existing GitHub App client and PostgreSQL publication store, including
-stale-head checks and uncertain-write reconciliation. Generic workers remain
-independent of GitHub and PostgreSQL.
+- New agent snapshots allow all native tools, including shell, filesystem,
+  execute, and subagents. The sandbox image runs as root. The worker remains
+  non-root. Project configuration is suppressed to preserve the authored prompt
+  and endpoint configuration, but agents can execute arbitrary sandbox code.
+- The pinned output schema is supplied in trusted system instructions. PR context
+  contains facts rather than a competing output-format instruction.
+- Each review stage receives a prepared checkout at the resolved base and exact
+  detached PR head. Repository-scoped contents-read credentials are transient.
+  GitHub App signing keys and publication credentials stay on the worker.
+- Publication accepts context-line comments and linked-body findings outside
+  hunks, refreshes the base when resolving, and treats the PR head as completion
+  identity. Config's legacy review and issue-comment markers prevent duplicates
+  during cutover. Large bodies use durable plans and per-part reconciliation.
+- Placement examines up to GitHub's 3,000 changed files; missing/truncated patches
+  use body links. The runtime accepts 1 MiB final JSON, a separate 64 MiB transcript
+  budget, 4 MiB aggregate graph input, and 8 MiB message/prompt envelopes.
+- Policy/head guards run before every review stage and every 15 seconds during
+  active work. Superseded or disabled runs cancel their contexts and child runs.
+  Out-of-order events cannot blindly interrupt the current PR head.
+- Stable ingress keeps admission identity while dispatching native, signed-webhook,
+  and manual runs to immutable revision-specific adapters with worker labels.
+  Child workflow action names also include the revision, so incompatible workers
+  cannot execute saved old actions.
+- Worker endpoints on port 9091 provide process liveness, latched startup, and
+  scheduler-aware readiness using this process's ACTIVE record and fresh heartbeat.
+- The images bundle pstack and Matt Pocock engineering skills. There is no Nix
+  environment or T3-specific skill bundle. GHCR publishes versioned and main-push
+  nightly images without a Depot dependency in this repository.
 
-The adapter reads actual verifier/adversarial step messages and preserves the old
-config reducer's source coverage, source location, and priority rules. It does not
-copy production prompts or model choices into the runtime. A complete portable
-example lives in [examples/github-review](../examples/github-review).
+See [PR integration](github-review.md), [skills](sandbox-skills.md), and
+[releases](releases.md) for configuration contracts.
 
-Ephemeral, single-use, preauthorized Tailscale identities already existed.
-Deployment profiles supply their tags. The sandbox's local Aperture proxy sends
-requests through that sandbox identity. `tool_policy: broker_catalog` lets
-Aperture control the tools exposed by a selected MCP server; exact local tool
-lists remain available. Native shell/file tools stay separate from broker grants.
+## Config migration and activation
 
-The images now contain [pstack and Matt Pocock engineering skills](sandbox-skills.md).
-They do not contain Nix or a T3-specific skill collection. Both image targets have
-[versioned and main-push GHCR publication](releases.md) without Depot.
+Production prompts, model settings, repository allowlists, Tailscale tags, secrets,
+Kubernetes resources, storage, and Flux routing remain config-owned. The migration
+moves agent manifests from Depot OCI bundles to the config Git source and updates
+sandbox root/security context, per-sandbox service ports, worker network access,
+probes, regular-file config materialization, RBAC, and persistent runtime state.
+The optional publication database must be shared by workers that can publish
+reviews for the same repositories.
 
-## Config-owned work still required
+Keep migration Flux Kustomizations suspended until the paired GHCR images are
+published and pinned, required Vault values/roles exist, and the publication
+schema/user/connectivity are ready. Suspending reconciliation preserves current
+live resources but pauses updates; it is an explicit activation gate, not a
+staging deployment or proof of application health.
 
-1. **Agent and broker configuration.** Port production prompts, schemas, model
-   settings, repository mappings, and publish policy into the new format. Register
-   repository investigation/verification backends with Aperture and grant access
-   through the sandbox tags. Registering a backend does not implement checkout or
-   test execution by itself. The runtime no longer assumes the old local Nix
-   environment or unrestricted shell. Repository-specific profiles must preserve
-   the old tag isolation.
-2. **Worker storage and credentials.** Materialize trusted config as regular files;
-   projected ConfigMap symlinks are rejected by the agent loader. Mount the stable
-   runtime key and persistent definitions, messages, and artifacts. Workers eligible
-   for the same runs need the same durable data. Mount App/database credentials
-   only when enabling the PR integration. The old worker's temporary directory and
-   read-only root filesystem alone are insufficient.
-3. **Services, probes, and networking.** The old sandbox templates use Kubernetes
-   exec, have no service configuration, deny all ingress, and probe
-   `.agent-home-ready`. The new runtime requires `status.serviceFQDN`, supervisor
-   port 8081, and OpenCode port 4096, plus sandboxd on 8080/9090. Update both sandbox
-   ingress and worker egress for trusted worker access. The old worker probes
-   `/health` on 8001; the Go worker's 9091 metrics/webhook server does not yet provide
-   equivalent scheduler-aware health probes.
-4. **Ownership and compatibility.** Configure distinct `AGENT_DEPLOYMENT_ID` values
-   for Portal and Gompers, `APERTURE_UPSTREAM`, provider bindings, and `/workspace`.
-   Add claim patch permission for expiry and sandbox patch permission if using
-   suspend/resume. Verify Hatchet server v0.107.0 against Go SDK v0.109.10, especially
-   durable children, cancellation, replay, and idempotency. Native event registration
-   cannot require worker labels in this SDK; use signed-webhook submission for
-   explicit placement. Manual model/effort overrides use configured plans.
-5. **Flux release sources.** Config currently consumes Depot OCI manifest bundles
-   `agent-release-latest` and `agent-tasks-release-latest`. Runnable GHCR images
-   do not replace those bundles. Use config Git sources with paired GHCR image
-   digests, or separately move the manifest publisher to GHCR. Change private image
-   pull credentials. Remove old Depot agent pipelines/sources only as part of that
-   reviewed config migration; unrelated Depot workloads are outside this change.
+## Cutover checks
 
-Deployment evidence comes from config's
-[`worker.yaml`](https://github.com/jake-molnia/config/blob/a1cc652afa6e995a2e714277b361e371a83137c0/clusters/shared/agent-workers/worker.yaml),
-[`template-tailnet.yaml`](https://github.com/jake-molnia/config/blob/a1cc652afa6e995a2e714277b361e371a83137c0/clusters/shared/agent-environments/template-tailnet.yaml),
-[`network-policy.yaml`](https://github.com/jake-molnia/config/blob/a1cc652afa6e995a2e714277b361e371a83137c0/clusters/shared/agent-infrastructure/network-policy.yaml),
-and Portal/Gompers worker infrastructure overlays. The old business behavior is in
-[`workflow.py`](https://github.com/jake-molnia/config/blob/a1cc652afa6e995a2e714277b361e371a83137c0/packages/agent-tasks/agent_tasks/workflows/pr_review/workflow.py).
+Run a separate worker/pool/workflow name first. Compare dry-run reviews against
+config, including exact checkout revisions, source reduction, context/fallback
+placement, stale-head cancellation, duplicate delivery, restart/replay, artifact
+retention, and claim cleanup. Exercise durable child cancellation and worker
+placement against the actual Hatchet server. Do not infer compatibility solely
+from SDK callback tests.
 
-## Cutover acceptance
+Drain old Python `pr-review` runs, including the legacy `judge` alias. Pre-v5
+runtime snapshots must also drain with their original compiler/worker; they do
+not silently gain unrestricted permissions. Retain old revision-specific workers
+until their remaining runs finish, along with their snapshots, messages, and
+matching skill images.
 
-Publish the paired images, create a separate worker/pool/workflow name in config,
-and complete a generic run with real Hatchet, provider, and sandbox credentials.
-Then compare the same PR through both workers in dry-run mode. Check exact revision
-access, source reduction, stale-head rejection, duplicate delivery, cancellation,
-restart/replay, artifact retention, and claim cleanup.
+Stop the old unscoped Tailscale reaper before sharing production devices; it can
+remove tagged devices after 45 minutes regardless of the new deployment scope.
+Keep previous images/manifests and persistent data available for rollback. Verify
+Flux reconciliation and application behavior separately.
 
-Drain old `pr-review` runs, including the legacy `judge` alias, before switching
-production routing. The new graph cannot resume Python task records. Stop the old
-Tailscale reaper before sharing production devices: it deletes tagged devices
-older than 45 minutes without the new deployment scope. Use isolated staging
-identities/policy or change that ownership logic for side-by-side trials.
-
-Apply production changes through the config repo's Flux process. Keep previous
-images/manifests and durable state for rollback. Verify reconciliation and
-application behavior separately. Local unit/native tests do not establish live
-Hatchet, PostgreSQL, GitHub, Tailscale, or Aperture compatibility.
+An ambiguous GitHub write that never becomes visible remains conservatively
+blocked. Investigate the durable publication record and GitHub state rather than
+blindly resetting it and risking a duplicate. Manual model/effort choices use
+config-defined plans instead of mutable overrides on an existing snapshot.

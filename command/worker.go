@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
+	"github.com/jake-molnia/agent-runtime/agentexec"
 	"github.com/jake-molnia/agent-runtime/artifacts"
 	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/hatchetbridge"
@@ -124,10 +125,16 @@ func worker(ctx context.Context) error {
 	registered := make([]hatchet.WorkflowBase, 0, len(plans))
 	for _, plan := range plans {
 		hooks := []hatchetbridge.ConfiguredHooks{}
+		var backend agentexec.Backend = engine
 		if reviewsEnabled && plan.Workflow.Name == reviewConfig.Workflow {
-			hooks = append(hooks, hatchetbridge.ReviewBeforeStep(reloadReview, handler))
+			hooks = append(hooks, hatchetbridge.ReviewBeforeStep(reloadReview, handler), hatchetbridge.ConfiguredHooks{BeforeStep: reviewCheckoutStep})
+			tokens, ok := handler.Client.(checkoutTokens)
+			if !ok {
+				return errors.New("review integration requires repository checkout credentials")
+			}
+			backend = reviewCheckoutBackend{Backend: engine, tokens: tokens}
 		}
-		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan, hooks...)
+		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, backend, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan, hooks...)
 		if err != nil {
 			return err
 		}
