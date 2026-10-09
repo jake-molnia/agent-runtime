@@ -26,6 +26,19 @@ type Tasks interface {
 
 func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/resources", func(w http.ResponseWriter, r *http.Request) {
+		if c.Resources == nil {
+			http.Error(w, "resources unavailable", 503)
+			return
+		}
+		snapshot, err := c.Resources(r.Context())
+		if err != nil {
+			http.Error(w, "resources unavailable", 503)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, snapshot)
+	})
 	mux.HandleFunc("POST /v1/operations", func(w http.ResponseWriter, r *http.Request) {
 		var request Request
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
@@ -86,9 +99,18 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		if c.PublicURL != "" && access.State.Endpoint != "" {
+			access.State.Endpoint = executionURL(c.PublicURL, r.URL.Query().Get("profile"), r.PathValue("workspaceId"))
+		}
 		writeJSON(w, 200, access)
 	})
+	gateway := http.NewServeMux()
+	gateway.Handle("/v1/execution/{profile}/{workspaceId}/{path...}", c.gateway())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/execution/") {
+			gateway.ServeHTTP(w, r)
+			return
+		}
 		if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusNoContent)
 			return

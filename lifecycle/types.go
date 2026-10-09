@@ -89,6 +89,9 @@ type Access struct {
 	Token string `json:"token,omitempty"`
 }
 type Controller struct {
+	PoolID    string
+	PublicURL string
+	Resources func(context.Context) (ResourceSnapshot, error)
 	Control   *sandbox.Control
 	Profiles  map[string]Profile
 	SecretKey []byte

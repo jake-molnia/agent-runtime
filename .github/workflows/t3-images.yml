@@ -26,6 +26,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -94,6 +97,24 @@ jobs:
           docker image inspect "$image" > "$RUNNER_TEMP/$TARGET.inspect.json"
           sha256sum "$RUNNER_TEMP/$TARGET.tar" > "$RUNNER_TEMP/$TARGET.tar.sha256"
           printf 'runtime=%s\nt3=%s\n' "$RUNTIME_SHA" "$T3_SHA" > "$RUNNER_TEMP/$TARGET.sources.txt"
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish verified image
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNTIME_SHA: ${{ github.sha }}
+        run: |
+          package="ghcr.io/${GITHUB_REPOSITORY,,}-worker"
+          if [ "$TARGET" = t3-worker ]; then package="ghcr.io/${GITHUB_REPOSITORY,,}-sandbox"; fi
+          image="$package:$TARGET-git-$RUNTIME_SHA"
+          docker tag "t3-local:$TARGET-$RUNTIME_SHA" "$image"
+          docker push "$image"
+          docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' > "$RUNNER_TEMP/$TARGET.published.txt"
+          cat "$RUNNER_TEMP/$TARGET.published.txt" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.target }}-${{ github.sha }}
@@ -102,5 +123,6 @@ jobs:
             ${{ runner.temp }}/${{ matrix.target }}.tar.sha256
             ${{ runner.temp }}/${{ matrix.target }}.inspect.json
             ${{ runner.temp }}/${{ matrix.target }}.sources.txt
+            ${{ runner.temp }}/${{ matrix.target }}.published.txt
           compression-level: 0
           retention-days: 7

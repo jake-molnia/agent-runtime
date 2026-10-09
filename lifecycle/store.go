@@ -30,7 +30,11 @@ func digest(v any) string {
 }
 func (c *Controller) token(workspace string, epoch uint64) string {
 	mac := hmac.New(sha256.New, c.SecretKey)
-	b, _ := json.Marshal([]any{"t3-worker-v1", workspace, epoch})
+	parts := []any{"t3-worker-v1", workspace, epoch}
+	if c.PoolID != "" {
+		parts = append(parts, c.PoolID)
+	}
+	b, _ := json.Marshal(parts)
 	mac.Write(b)
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

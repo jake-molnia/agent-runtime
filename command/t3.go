@@ -9,7 +9,9 @@ import (
 	"github.com/jake-molnia/agent-runtime/lifecycle"
 	"github.com/jake-molnia/agent-runtime/sandbox"
 	"golang.org/x/sync/errgroup"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -44,6 +46,18 @@ func t3Worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	controller.PoolID = os.Getenv("T3_POOL_ID")
+	if controller.PoolID != "" && !regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`).MatchString(controller.PoolID) {
+		return errors.New("invalid T3_POOL_ID")
+	}
+	controller.PublicURL = strings.TrimRight(os.Getenv("T3_PUBLIC_URL"), "/")
+	if controller.PublicURL != "" {
+		u, err := url.Parse(controller.PublicURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("invalid T3_PUBLIC_URL")
+		}
+	}
+	controller.Resources = lifecycle.Resources(control.API, os.Getenv("T3_NODE_SELECTOR"), os.Getenv("T3_RESOURCE_NODE"))
 	client, err := hatchet.NewClient()
 	if err != nil {
 		return err

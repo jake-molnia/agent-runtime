@@ -10,13 +10,15 @@ CI checks out that exact revision when building the web and worker images.
    you run the **T3 images** workflow manually.
 2. Run the workflow on the integration branch after both repositories are pushed.
 3. Download the three image artifacts and their checksum and source files.
-4. Load each image with `docker load --input <target>.tar` before tagging and
+4. Use the immutable reference in each artifact’s `published.txt`, or load
+   the image with `docker load --input <target>.tar` before tagging and
    publishing it to your registry.
 
 The workflow builds `t3-worker`, `t3-web`, and `t3-runtime` on Ubuntu for
 `linux/amd64`. Each artifact includes the Docker image archive, its SHA-256,
-image inspection output, and both source commits. It never deploys or publishes
-images. A push to `t3/sandbox-session-lifecycle` starts a build only when its
+image inspection output, and both source commits. After verification, it publishes immutable commit tags to GHCR. The web and control
+images use the `agent-runtime-worker` package; the execution image uses
+`agent-runtime-sandbox`. It does not deploy them. A push to `t3/sandbox-session-lifecycle` starts a build only when its
 listed build inputs change.
 
 ## Build locally with Docker Buildx
@@ -39,7 +41,9 @@ packaged worker with disposable state. It verifies authenticated identity and
 checks that the worker creates no conversation SQLite database. The web build
 boots the bundled central application and requests its HTML over loopback. These
 checks do not launch a browser or sign into providers. The workflow boots the exported worker and web images through their real
-entrypoints as UID 1000 with a read-only root filesystem, dropped capabilities,
+entrypoints with their deployment permissions: central web runs as UID 1000 with a
+read-only root filesystem; execution workers run as root inside their isolated
+sandbox with a writable root filesystem. Both drop capabilities,
 and external networking disabled. Disposable writable mounts match the deployment
 paths. It also checks that the worker rejects unauthenticated identity requests.
 

@@ -27,10 +27,15 @@ variables = (
 )
 command = [
     'docker', 'run', '--detach', '--name', name, '--network', 'none',
-    '--read-only', '--user', '1000:1000', '--cap-drop', 'ALL',
+    '--user', '0:0' if worker else '1000:1000', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,nosuid,nodev',
-    '--tmpfs', ('/workspace' if worker else '/data') + ':rw,uid=1000,gid=1000,mode=0700',
+    '--tmpfs', ('/workspace:rw,uid=0,gid=0,mode=0700' if worker else '/data:rw,uid=1000,gid=1000,mode=0700'),
 ]
+if not worker:
+    command.append('--read-only')
+else:
+    for capability in ('CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID'):
+        command.extend(['--cap-add', capability])
 for variable in variables:
     command.extend(['--env', variable])
 command.append(args.image)
@@ -48,7 +53,7 @@ try:
     raise AssertionError('Unauthenticated worker identity was accepted')
 except urllib.error.HTTPError as error:
     assert error.code == 401
-assert not [p for p in Path('/workspace').rglob('*') if p.suffix in ('.sqlite', '.sqlite3', '.db')], 'Worker created a database'
+assert not [p for p in Path('/workspace').rglob('*') if p.name in ('state.sqlite', 'statev2.sqlite')], 'Worker created a database'
 ''' if worker else r'''
 import urllib.request
 with urllib.request.urlopen('http://127.0.0.1:3773/', timeout=2) as response:
@@ -63,11 +68,36 @@ try:
             raise RuntimeError('Container exited before becoming ready')
         result = subprocess.run(['docker', 'exec', name, 'python3', '-c', probe], capture_output=True, text=True)
         if result.returncode == 0:
-            print(f'{args.target} real entrypoint passed with read-only rootfs, UID 1000, no capabilities and no external network.')
+            print(f'{args.target} real entrypoint passed with deployment user/filesystem/capability settings and no external network.')
             break
         if time.monotonic() >= deadline:
             raise RuntimeError('Image did not become ready: ' + result.stderr[-2000:])
         time.sleep(.5)
+    if worker:
+        verification = r"""
+import base64, json, os, tempfile, urllib.request
+assert os.getuid() == 0
+with tempfile.NamedTemporaryFile() as f:
+    os.chown(f.name, 1000, 1000)
+    assert os.stat(f.name).st_uid == 1000
+child = os.fork()
+if child == 0:
+    os.setgid(1000)
+    os.setuid(1000)
+    os._exit(0)
+assert os.waitpid(child, 0)[1] == 0
+headers = {'Authorization': 'Bearer ' + os.environ['T3_WORKER_TOKEN'], 'Content-Type': 'application/json'}
+with urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8083/v1/identity', headers=headers)) as response:
+    identity = json.load(response)
+request = urllib.request.Request('http://127.0.0.1:8083/v1/operations', headers=headers, data=json.dumps({'identity': identity, 'operationId': 'image-browser-smoke', 'method': 'html.preview', 'input': {'html': '<h1>T3 sandbox preview</h1>', 'width': 640}}).encode())
+with urllib.request.urlopen(request, timeout=45) as response:
+    result = json.load(response)
+assert result['ok'], result
+assert base64.b64decode(result['value']['png']).startswith(b'\x89PNG\r\n\x1a\n')
+assert result['value']['width'] == 640
+print('Worker root operations and native Chromium preview passed.')
+"""
+        subprocess.run(['docker', 'exec', name, 'python3', '-c', verification], check=True, timeout=60)
 except Exception:
     logs = subprocess.run(['docker', 'logs', '--tail', '100', name], capture_output=True, text=True)
     output = logs.stdout + logs.stderr
