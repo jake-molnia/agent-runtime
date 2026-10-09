@@ -263,3 +263,47 @@ func TestReceiveRestoresDataAndChecksRecipient(t *testing.T) {
 		t.Fatal("cross-context reply accepted")
 	}
 }
+
+func TestDataStructureValidationDoesNotDependOnStorage(t *testing.T) {
+	ctx := context.Background()
+	for name, data := range map[string]json.RawMessage{
+		"duplicate keys": json.RawMessage(`{"value":1,"value":2}`),
+		"deep nesting":   json.RawMessage(strings.Repeat("[", 65) + "0" + strings.Repeat("]", 65)),
+	} {
+		for _, storage := range []string{"inline", "spilled", "attachment"} {
+			t.Run(name+"/"+storage, func(t *testing.T) {
+				store := Directory{Root: t.TempDir()}
+				inline := DefaultInlineBytes
+				if storage == "spilled" {
+					inline = 1
+				}
+				service, err := New(store, map[string]Validator{"json": func(json.RawMessage) error { return nil }}, nil, inline)
+				if err != nil {
+					t.Fatal(err)
+				}
+				message := sampleMessage()
+				part := Part{Name: "result", Kind: Data, Schema: "json", Data: data}
+				if storage == "attachment" {
+					attachment, err := store.PutAttachment(ctx, "scope", "application/json", data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					part.Data, part.Attachment = nil, &attachment
+				}
+				message.Parts = []Part{part}
+				if _, err := service.Publish(ctx, "scope", message); err == nil {
+					t.Fatal("invalid JSON structure accepted for publication")
+				}
+				if storage == "attachment" {
+					ref, err := store.Put(ctx, "scope", message)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := service.Receive(ctx, "scope", ref, message.To); err == nil {
+						t.Fatal("preexisting attachment with invalid JSON structure accepted")
+					}
+				}
+			})
+		}
+	}
+}

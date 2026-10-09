@@ -22,6 +22,7 @@ FROM node:26.9.0-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bd
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git python3 ripgrep tini \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --allow-scripts=@opencode/cli --no-audit --no-fund @opencode/cli@2.0.26 \
+    && npm cache clean --force \
     && mkdir /workspace && chown node:node /workspace
 COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,14 +38,13 @@ type InitResult struct {
 	HarnessSeconds float64 `json:"harness_seconds"`
 }
 type Supervisor struct {
-	running         bool
+	exited          atomic.Bool
 	Root            string
 	OpenCodeBinary  string
 	TailscaleSocket string
 	mu              sync.Mutex
 	digest          string
 	result          InitResult
-	child           *exec.Cmd
 	lifetime        context.Context
 }
 
@@ -67,10 +67,7 @@ func (s *Supervisor) Handler(ctx context.Context) http.Handler {
 		_ = json.NewEncoder(w).Encode(result)
 	})
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		healthy := s.digest == "" || s.running
-		s.mu.Unlock()
-		if !healthy {
+		if s.exited.Load() {
 			http.Error(w, "OpenCode unavailable", 503)
 			return
 		}
@@ -93,7 +90,7 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 		if s.digest != digest {
 			return InitResult{}, errors.New("runtime already assigned")
 		}
-		if !s.running {
+		if s.exited.Load() {
 			return InitResult{}, errors.New("OpenCode server exited")
 		}
 		return s.result, nil
@@ -176,15 +173,13 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 		<-done
 		return result, err
 	}
-	s.child = cmd
-	s.running = true
 	s.digest = digest
 	lifetime := s.lifetime
 	if lifetime == nil {
 		lifetime = ctx
 	}
 	go func() {
-		defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
+		defer s.exited.Store(true)
 		select {
 		case <-lifetime.Done():
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)

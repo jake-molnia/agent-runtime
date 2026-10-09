@@ -257,3 +257,48 @@ func TestRuntimeFailedInitializationRemovesSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeHealthRespondsDuringInitialization(t *testing.T) {
+	binDir := t.TempDir()
+	started := filepath.Join(binDir, "started")
+	t.Setenv("TEST_TAILSCALE_STARTED", started)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(binDir, "tailscale"), []byte("#!/bin/sh\n: > \"$TEST_TAILSCALE_STARTED\"\nexec sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := &runtimeapi.Supervisor{Root: t.TempDir()}
+	handler := supervisor.Handler(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = supervisor.Initialize(ctx, runtimeapi.Init{
+			RunID: "test", Password: strings.Repeat("p", 32), Config: json.RawMessage(`{}`), TailnetKey: "test",
+		})
+	}()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("enrollment did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	health := make(chan int, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", "/health", nil))
+		health <- response.Code
+	}()
+	select {
+	case status := <-health:
+		if status != http.StatusOK {
+			t.Fatalf("health during initialization = %d, want 200", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("health blocked on initialization")
+	}
+}
