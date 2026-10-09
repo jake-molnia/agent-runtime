@@ -111,8 +111,16 @@ func TestReviewRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	declaration, regular, durable, _ := workflow.Dump()
-	if len(regular) != 2 || len(durable) != 1 || len(declaration.ConcurrencyArr) != 1 || len(declaration.EventTriggers) != 0 {
+	if len(regular) != 2 || len(durable) != 1 || len(declaration.ConcurrencyArr) != 0 || len(declaration.EventTriggers) != 0 {
 		t.Fatalf("incorrect adapter graph %+v", declaration)
+	}
+	ingress, err := RegisterReviewIngress(offlineLifecycleClient(t), config, workflow, fixture.plan.Digest, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration, regular, durable, _ = ingress.Dump()
+	if len(declaration.ConcurrencyArr) != 1 || declaration.ConcurrencyArr[0].GetLimitStrategy().String() != "GROUP_ROUND_ROBIN" || len(regular) != 0 || len(durable) != 1 || declaration.Name != "_"+config.Name {
+		t.Fatalf("invalid ingress %+v", declaration)
 	}
 	raw, err := json.Marshal(declaration)
 	if err != nil {

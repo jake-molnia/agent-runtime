@@ -2,8 +2,6 @@ package hatchetbridge
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
@@ -60,23 +58,11 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 	if err != nil {
 		return nil, err
 	}
-	configJSON, err := json.Marshal(config)
+	revision, err := ReviewRevision(config, plan.Digest)
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(append(configJSON, []byte(plan.Digest)...))
-	revision := hex.EncodeToString(sum[:])
-	limit, strategy := int32(1), hatchet.GroupRoundRobin
-
-	options := []hatchet.WorkflowOption{hatchet.WithWorkflowVersion(revision), hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: reviewConcurrencyExpression, MaxRuns: &limit, LimitStrategy: &strategy}), hatchet.WithWorkflowIdempotency(hatchet.IdempotencyConfig{Expression: reviewIdempotencyExpression, TTL: 30 * 24 * time.Hour, Method: hatchet.IdempotencyMethodTTL})}
-	if config.NativeEvents {
-		events := []string{}
-		for _, action := range config.Actions {
-			events = append(events, "github:pull_request:"+action)
-		}
-		options = append(options, hatchet.WithWorkflowEvents(events...), hatchet.WithDefaultFilters(hatchet.DefaultFilter{Expression: "!input.pull_request.draft && input.pull_request.state == 'open'", Scope: config.Name}))
-	}
-	workflow := client.NewWorkflow(config.Name, options...)
+	workflow := client.NewWorkflow(ConfiguredWorkflowName(config.Name, revision), hatchet.WithWorkflowVersion(revision))
 	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input map[string]any) (ReviewResult, error) {
 		raw, err := json.Marshal(input)
 		if err != nil {
@@ -122,7 +108,13 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 		if err != nil {
 			return result, err
 		}
-		childResult, err := child.Run(ctx, ConfiguredInput{Digest: plan.Digest, Input: input}, hatchet.WithDesiredWorkerLabels(ReviewLabels(config)))
+		guarded, stopGuard, err := watchStage(ctx.GetContext(), 15*time.Second, func(checkCtx context.Context) error { return CheckReview(checkCtx, reload, handler, resolved.Input) })
+		if err != nil {
+			return result, err
+		}
+		defer stopGuard()
+		ctx.SetContext(guarded)
+		childResult, err := runReviewChild(ctx, client, child, ConfiguredInput{Digest: plan.Digest, Input: input}, ReviewLabels(config))
 		if err != nil {
 			return result, err
 		}
