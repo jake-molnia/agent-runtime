@@ -14,7 +14,7 @@ Provider/model safety behavior and remote MCP authorization are outside this fil
 
 The Dockerfile copies this file to
 `/etc/agent-runtime/harnesses/opencode.json` in both images. The sandbox sets
-`OPENCODE_CONFIG` to that path so directly launching `opencode2` uses it.
+`OPENCODE_CONFIG` to that path so directly launching `opencode` uses it.
 `OPENCODE_DISABLE_PROJECT_CONFIG=1` prevents a checkout's config from replacing
 these defaults. The runtime also embeds the same source file into its binary,
 then adds the pinned agent instructions, output schema, model/provider settings,
