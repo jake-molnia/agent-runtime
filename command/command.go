@@ -81,8 +81,12 @@ func serve(ctx context.Context) error {
 		g.Go(func() error { return httpServer(ctx, "127.0.0.1:8082", handler) })
 	}
 	g.Go(func() error { return child(ctx, "sandboxd", "--root-dir="+root) })
+	desktopReady := make(chan struct{})
+	g.Go(func() error { return runDesktop(ctx, root, desktopReady) })
 	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: os.Getenv("OPENCODE_BINARY"), TailscaleSocket: socket}
-	g.Go(func() error { return httpServer(ctx, ":8081", supervisor.Handler(ctx)) })
+	g.Go(func() error {
+		return httpServer(ctx, ":8081", desktopHandler(ctx, desktopReady, supervisor.Handler(ctx)))
+	})
 	return g.Wait()
 }
 func httpServer(ctx context.Context, addr string, handler http.Handler) error {
@@ -111,11 +115,16 @@ func httpServer(ctx context.Context, addr string, handler http.Handler) error {
 }
 func child(ctx context.Context, binary string, args ...string) error {
 	cmd := exec.Command(binary, args...)
+	return runChild(ctx, cmd)
+}
+
+func runChild(ctx context.Context, cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Raw subprocess diagnostics can include credentials. Health endpoints and exit status are the public contract.
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("cannot start %s", binary)
+		return fmt.Errorf("cannot start %s: %w", cmd.Path, err)
 	}
+	defer syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
@@ -129,6 +138,6 @@ func child(ctx context.Context, binary string, args ...string) error {
 		}
 		return ctx.Err()
 	case <-done:
-		return fmt.Errorf("%s exited", binary)
+		return fmt.Errorf("%s exited", cmd.Path)
 	}
 }

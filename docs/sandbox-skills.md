@@ -52,7 +52,7 @@ For the opt-in native checks, install the catalog and bundles as sibling
 directories named `catalog` and `bundles`, then run:
 
 ```sh
-AGENT_RUNTIME_TEST_OPENCODE_BINARY=/absolute/path/to/opencode2 \
+AGENT_RUNTIME_TEST_OPENCODE_BINARY=/absolute/path/to/opencode \
 AGENT_RUNTIME_TEST_SKILLS_DIRECTORY=/absolute/path/to/catalog \
   go test ./command -run '^TestOpenCodeNative' -count=1
 ```
