@@ -9,14 +9,13 @@ CI checks out that exact revision when building the web and worker images.
 1. Set `ref` in `source.lock.json` to the T3 fork commit, or supply `t3_ref` when
    you run the **T3 images** workflow manually.
 2. Run the workflow on the integration branch after both repositories are pushed.
-3. Download the three image artifacts and their checksum and source files.
-4. Use the immutable reference in each artifact’s `published.txt`, or load
-   the image with `docker load --input <target>.tar` before tagging and
-   publishing it to your registry.
+3. Download the small verification artifacts, including each target's `published.txt`.
+4. Pull the immutable GHCR reference from `published.txt` and use that digest in the deployment.
+
 
 The workflow builds `t3-worker`, `t3-web`, and `t3-runtime` on Ubuntu for
-`linux/amd64`. Each artifact includes the Docker image archive, its SHA-256,
-image inspection output, and both source commits. After verification, it publishes immutable commit tags to GHCR. The web and control
+`linux/amd64`. Each artifact includes image inspection output, its published digest, and both
+source commits. After verification, it publishes immutable commit tags to GHCR. The web and control
 images use the `agent-runtime-worker` package; the execution image uses
 `agent-runtime-sandbox`. It does not deploy them. A push to `t3/sandbox-session-lifecycle` starts a build only when its
 listed build inputs change.

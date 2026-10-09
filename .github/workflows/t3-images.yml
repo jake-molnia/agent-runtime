@@ -79,7 +79,7 @@ jobs:
           target: ${{ matrix.target }}
           platforms: linux/amd64
           tags: t3-local:${{ matrix.target }}-${{ github.sha }}
-          outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.target }}.tar
+          load: true
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
       - name: Verify exported image
@@ -88,7 +88,6 @@ jobs:
           RUNTIME_SHA: ${{ github.sha }}
           T3_SHA: ${{ steps.source.outputs.ref }}
         run: |
-          docker load --input "$RUNNER_TEMP/$TARGET.tar"
           image="t3-local:$TARGET-$RUNTIME_SHA"
           case "$TARGET" in
             t3-worker) python3 runtime/images/t3/smoke-image.py "$TARGET" "$image" ;;
@@ -96,7 +95,6 @@ jobs:
             t3-runtime) docker run --rm --network none "$image" version ;;
           esac
           docker image inspect "$image" > "$RUNNER_TEMP/$TARGET.inspect.json"
-          sha256sum "$RUNNER_TEMP/$TARGET.tar" > "$RUNNER_TEMP/$TARGET.tar.sha256"
           printf 'runtime=%s\nt3=%s\n' "$RUNTIME_SHA" "$T3_SHA" > "$RUNNER_TEMP/$TARGET.sources.txt"
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
@@ -120,8 +118,6 @@ jobs:
         with:
           name: ${{ matrix.target }}-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/${{ matrix.target }}.tar
-            ${{ runner.temp }}/${{ matrix.target }}.tar.sha256
             ${{ runner.temp }}/${{ matrix.target }}.inspect.json
             ${{ runner.temp }}/${{ matrix.target }}.sources.txt
             ${{ runner.temp }}/${{ matrix.target }}.published.txt
