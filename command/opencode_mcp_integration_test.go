@@ -1,0 +1,341 @@
+package command
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jake-molnia/agent-runtime/definitions"
+	"github.com/jake-molnia/agent-runtime/opencode"
+	"github.com/jake-molnia/agent-runtime/orchestration"
+	runtimeapi "github.com/jake-molnia/agent-runtime/runtime"
+	"github.com/jake-molnia/agent-runtime/sandbox"
+)
+
+func TestOpenCodeNativeMCPIntegration(t *testing.T) {
+	binary := os.Getenv("AGENT_RUNTIME_TEST_OPENCODE_BINARY")
+	if binary == "" {
+		t.Skip("set AGENT_RUNTIME_TEST_OPENCODE_BINARY to pinned OpenCode V2 2.0.26")
+	}
+	binary, err := filepath.Abs(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempted := range []string{"publish_comment", "dangerous_tool"} {
+		t.Run(attempted, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:4096")
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener.Close()
+			var mutex sync.Mutex
+			methods, calls := map[string]int{}, map[string]int{}
+			var advertised [][]string
+			unusedRequests := 0
+			broker := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != "POST" {
+					writer.WriteHeader(405)
+					return
+				}
+				var rpc struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+					Params struct {
+						Name string `json:"name"`
+					} `json:"params"`
+				}
+				if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20)).Decode(&rpc); err != nil {
+					t.Errorf("MCP decode: %v", err)
+					writer.WriteHeader(400)
+					return
+				}
+				mutex.Lock()
+				methods[rpc.Method]++
+				if rpc.Method == "tools/call" {
+					calls[rpc.Params.Name]++
+				}
+				mutex.Unlock()
+				if len(rpc.ID) == 0 {
+					writer.WriteHeader(202)
+					return
+				}
+				var result any
+				switch rpc.Method {
+				case "initialize":
+					result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "fake-broker", "version": "1"}}
+				case "tools/list":
+					tools := []any{}
+					for _, name := range []string{"publish_comment", "dangerous_tool"} {
+						tools = append(tools, map[string]any{"name": name, "description": name, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}})
+					}
+					result = map[string]any{"tools": tools}
+				case "tools/call":
+					result = map[string]any{"content": []any{map[string]string{"type": "text", "text": "broker called"}}}
+				default:
+					t.Errorf("unexpected MCP method %s", rpc.Method)
+					result = map[string]any{}
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result})
+			}))
+			t.Cleanup(broker.Close)
+			unused := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				mutex.Lock()
+				unusedRequests++
+				mutex.Unlock()
+				writer.WriteHeader(500)
+			}))
+			t.Cleanup(unused.Close)
+			const answer = `{"verified":true}`
+			const providerKey = "fake-local-provider-key"
+			provider := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, 1<<20))
+				var payload struct {
+					Tools []struct {
+						Function struct {
+							Name string `json:"name"`
+						} `json:"function"`
+					} `json:"tools"`
+				}
+				if err != nil || json.Unmarshal(body, &payload) != nil {
+					t.Errorf("invalid provider request %s: %v", body, err)
+					writer.WriteHeader(400)
+					return
+				}
+				if request.URL.Path != "/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer "+providerKey {
+					t.Errorf("provider path/auth mismatch %s", request.URL.Path)
+					writer.WriteHeader(401)
+					return
+				}
+				names := []string{}
+				for _, tool := range payload.Tools {
+					names = append(names, tool.Function.Name)
+				}
+				mutex.Lock()
+				advertised = append(advertised, names)
+				first := len(advertised) == 1
+				mutex.Unlock()
+				writer.Header().Set("Content-Type", "text/event-stream")
+				delta := map[string]any{"role": "assistant"}
+				finish := "stop"
+				if first {
+					delta["tool_calls"] = []any{map[string]any{"index": 0, "id": "call_mcp", "type": "function", "function": map[string]string{"name": "broker_" + attempted, "arguments": "{}"}}}
+					finish = "tool_calls"
+				} else {
+					delta["content"] = answer
+				}
+				for _, chunk := range []map[string]any{{"delta": delta, "finish_reason": nil}, {"delta": map[string]any{}, "finish_reason": finish}} {
+					chunk["index"] = 0
+					data, _ := json.Marshal(map[string]any{"id": "chatcmpl-mcp", "object": "chat.completion.chunk", "created": 1, "model": "json", "choices": []any{chunk}})
+					fmt.Fprintf(writer, "data: %s\n\n", data)
+				}
+				fmt.Fprint(writer, "data: [DONE]\n\n")
+			}))
+			t.Cleanup(provider.Close)
+			root := t.TempDir()
+			workspace := filepath.Join(root, "workspace")
+			if err := os.Mkdir(workspace, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("TMPDIR", root)
+			secretFile := filepath.Join(root, "provider-key")
+			if err := os.WriteFile(secretFile, []byte(providerKey), 0600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := fmt.Sprintf(`version: 1
+defaults:
+  model: {provider: smoke, id: json}
+  execution: {profile: local, timeout_seconds: 45}
+mcp_servers:
+  broker:
+    url: %q
+    tools: [publish_comment]
+  unused:
+    url: %q
+    tools: [dangerous_tool]
+profiles:
+  local:
+    pool: local
+    namespace: local
+    directory: %q
+    mcp: [broker, unused]
+    secret_files: {smoke: %q}
+    config:
+      providers:
+        smoke:
+          package: "@opencode-ai/ai/providers/openai-compatible"
+          env: [SMOKE_PROVIDER_API_KEY]
+          settings: {baseURL: %q}
+          models:
+            json:
+              capabilities: {tools: true, input: [text], output: [text]}
+              limit: {context: 32000, output: 2048}
+`, broker.URL, unused.URL, workspace, secretFile, provider.URL+"/v1")
+			if err := os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(fixture), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, "agents", "verify"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "agents", "verify", "agent.yaml"), []byte("mcp: [broker]\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := definitions.Load(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := catalog.Snapshot("verify")
+			if err != nil {
+				t.Fatal(err)
+			}
+			definition, err := snapshot.Definition()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+			t.Cleanup(cancel)
+			secrets, err := definition.Secrets(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config, err := definition.Config(secrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var compiled struct {
+				Permissions json.RawMessage `json:"permissions"`
+			}
+			if err := json.Unmarshal(config, &compiled); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("compiled exact permissions: %s", compiled.Permissions)
+			engine := &orchestration.Engine{SecretKey: []byte(strings.Repeat("k", 32))}
+			run := orchestration.Request{Key: "mcp-integration-" + attempted, Prompt: "Use the broker once, then return standalone JSON."}
+			prepared := orchestration.Prepared{SessionID: "ses_mcp_" + attempted, MessageID: "msg_mcp_" + attempted, Lease: sandbox.Lease{Host: "127.0.0.1"}}
+			client, err := engine.Client(run.Key, prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			supervisor := &runtimeapi.Supervisor{Root: workspace, OpenCodeBinary: binary}
+			_ = supervisor.Handler(ctx)
+			t.Cleanup(func() {
+				cancel()
+				deadline := time.Now().Add(6 * time.Second)
+				for time.Now().Before(deadline) {
+					connection, err := net.DialTimeout("tcp", "127.0.0.1:4096", 100*time.Millisecond)
+					if err != nil {
+						return
+					}
+					connection.Close()
+					time.Sleep(25 * time.Millisecond)
+				}
+				t.Error("Supervisor did not release port 4096")
+			})
+			t.Cleanup(func() {
+				mutex.Lock()
+				defer mutex.Unlock()
+				t.Logf("MCP methods=%v calls=%v advertised=%v nonselected requests=%d", methods, calls, advertised, unusedRequests)
+				if methods["initialize"] == 0 || methods["tools/list"] == 0 {
+					t.Error("selected MCP server was not initialized and listed")
+				}
+				if unusedRequests != 0 {
+					t.Error("nonselected MCP server contacted")
+				}
+				if len(advertised) == 0 {
+					t.Error("provider never contacted")
+				}
+				for _, names := range advertised {
+					if len(names) != 1 || names[0] != "broker_publish_comment" {
+						t.Errorf("live model tool allowlist violated: %v", names)
+					}
+				}
+				if calls["dangerous_tool"] != 0 {
+					t.Error("unapproved tool executed")
+				}
+				if attempted == "publish_comment" && calls["publish_comment"] != 1 {
+					t.Error("approved tool did not execute exactly once")
+				}
+			})
+			if _, err := supervisor.Initialize(ctx, runtimeapi.Init{RunID: run.Key, Password: engine.Password(run.Key), Config: config}); err != nil {
+				t.Fatal(err)
+			}
+			info, err := opencode.Decode[struct {
+				Version string `json:"version"`
+			}](client.Do(ctx, "GET", "/api/info", opencode.Arguments{}))
+			if err != nil || info.Version != "2.0.26" {
+				t.Fatalf("requires pinned 2.0.26: %+v, %v", info, err)
+			}
+			t.Logf("native OpenCode version %s binary %s", info.Version, binary)
+			if _, err := opencode.Decode[json.RawMessage](client.Do(ctx, "GET", "/api/integration", opencode.Arguments{})); err != nil {
+				t.Fatal(err)
+			}
+			credential, err := client.Do(ctx, "POST", "/api/integration/{integrationID}/connect/key", opencode.Arguments{Path: map[string]string{"integrationID": "smoke"}, Body: map[string]string{"key": providerKey}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential.Body.Close()
+			created, err := client.Do(ctx, "POST", "/api/session", opencode.Arguments{Body: map[string]any{"id": prepared.SessionID, "location": map[string]string{"directory": definition.Directory}, "agent": definition.Agent, "model": definition.Model}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created.Body.Close()
+			selected, err := opencode.Decode[struct {
+				Data struct {
+					Agent string `json:"agent"`
+					Model struct {
+						ProviderID string `json:"providerID"`
+						ID         string `json:"id"`
+					} `json:"model"`
+				} `json:"data"`
+			}](client.Do(ctx, "GET", "/api/session/{sessionID}", opencode.Arguments{Path: map[string]string{"sessionID": prepared.SessionID}}))
+			if err != nil || selected.Data.Agent != definition.Agent || selected.Data.Model.ProviderID != "smoke" || selected.Data.Model.ID != "json" {
+				t.Fatalf("session ignored compiled selection: %+v, %v", selected, err)
+			}
+			if err := client.ReadyMCP(ctx, definition.Directory, definition.MCPServers); err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := client.Do(ctx, "POST", "/api/session/{sessionID}/prompt", opencode.Arguments{Path: map[string]string{"sessionID": prepared.SessionID}, Body: map[string]string{"id": prepared.MessageID, "text": run.Prompt}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt.Body.Close()
+			for {
+				state, err := orchestration.Status(ctx, client, prepared.SessionID)
+				if err != nil {
+					t.Fatalf("MCP status: %v", err)
+				}
+				if state.Pending != "" {
+					t.Fatalf("exact permissions lost, pending request: %+v", state)
+				}
+				if state.Outcome != "" {
+					if state.Outcome != "succeeded" {
+						t.Fatalf("MCP execution: %+v", state)
+					}
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatalf("MCP timeout: %+v", state)
+				case <-time.After(25 * time.Millisecond):
+				}
+			}
+			output, err := engine.ReadOutput(ctx, run, prepared)
+			if err != nil || string(output) != answer {
+				t.Fatalf("MCP final JSON: %s, %v", output, err)
+			}
+			if err := snapshot.ValidateOutput(output); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
