@@ -23,7 +23,7 @@ whole step results. `ResolveInput(step, initial, parents)` clones a scalar
 reference's whole JSON value, or returns an array of whole values in list order.
 A one-element list remains an array. Objects, arrays, strings, booleans, numbers,
 and null are supported. Missing or malformed values fail. Referenced values and
-the resolved input must each fit within `MaxInputBytes`, 1 MiB. There are no
+the resolved input must each fit within `MaxInputBytes`, 4 MiB. There are no
 selectors, expressions, or prompt interpolation.
 
 `Capture(workflow, catalog)` resolves agents by step ID into a `Snapshot` and

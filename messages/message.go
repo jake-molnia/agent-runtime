@@ -13,7 +13,7 @@ import (
 
 const (
 	Version            = 1
-	MaxMessageBytes    = 2 << 20
+	MaxMessageBytes    = 8 << 20
 	MaxAttachmentBytes = 16 << 20
 	MaxParts           = 32
 )

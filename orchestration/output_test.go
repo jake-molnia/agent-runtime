@@ -82,7 +82,7 @@ func TestParseOutputRejectsUnsafeResponses(t *testing.T) {
 		{"missing data", `{"cursor":{}}`},
 		{"missing cursor", `{"data":[]}`},
 		{"malformed", `{`},
-		{"oversized", strings.Repeat(" ", MaxOutputBytes+1)},
+		{"oversized final", outputEnvelope(strings.Replace(outputFinal, `{\"ok\":true}`, strings.Repeat("x", MaxOutputBytes+1), 1), outputPrompt)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := ParseOutput(json.RawMessage(test.data), "msg_prompt")
@@ -171,9 +171,9 @@ func TestReadOutputBounds(t *testing.T) {
 		pages       []string
 		wantSuccess bool
 	}{
-		{"exact limit", []string{outputEnvelope(outputFinal, outputPrompt) + strings.Repeat(" ", MaxOutputBytes-len(outputEnvelope(outputFinal, outputPrompt)))}, true},
-		{"oversized body", []string{strings.Repeat(" ", MaxOutputBytes+100)}, false},
-		{"cumulative bound", []string{`{"data":[` + strings.Replace(outputFinal, `{\"ok\":true}`, strings.Repeat("a", MaxOutputBytes/2), 1) + `],"cursor":{"next":"opaque"}}`, outputEnvelope(outputPrompt) + strings.Repeat(" ", MaxOutputBytes/2)}, false},
+		{"exact limit", []string{outputEnvelope(outputFinal, outputPrompt) + strings.Repeat(" ", MaxTranscriptBytes-len(outputEnvelope(outputFinal, outputPrompt)))}, true},
+		{"oversized body", []string{strings.Repeat(" ", MaxTranscriptBytes+100)}, false},
+		{"cumulative bound", []string{`{"data":[` + strings.Replace(outputFinal, `{\"ok\":true}`, strings.Repeat("a", MaxTranscriptBytes/2), 1) + `],"cursor":{"next":"opaque"}}`, outputEnvelope(outputPrompt) + strings.Repeat(" ", MaxTranscriptBytes/2)}, false},
 		{"repeated cursor", []string{`{"data":[` + outputFinal + `],"cursor":{"next":"opaque"}}`, `{"data":[` + outputFinal + `],"cursor":{"next":"opaque"}}`}, false},
 		{"empty page", []string{outputEnvelope()}, false},
 		{"missing prompt", []string{outputEnvelope(outputFinal)}, false},
@@ -201,7 +201,7 @@ func TestReadOutputBounds(t *testing.T) {
 					t.Fatal("response body not closed")
 				}
 			}
-			if read > MaxOutputBytes+1 {
+			if read > MaxTranscriptBytes+1 {
 				t.Fatalf("read %d bytes beyond bounded limit", read)
 			}
 		})
@@ -268,5 +268,58 @@ func TestReadOutputRequiresRunIdentity(t *testing.T) {
 	}
 	if _, err := engine.ReadOutput(context.Background(), Request{}, Prepared{SessionID: "ses_run", MessageID: "msg_prompt"}); err == nil {
 		t.Fatal("accepted missing run key")
+	}
+}
+
+func TestReadOutputSeparatesTranscriptAndFinalBudgets(t *testing.T) {
+	nearLimit := `{"text":"` + strings.Repeat(`\"`, (MaxOutputBytes-11)/2) + `"}`
+	for _, tc := range []struct{ name, final, history string }{
+		{"large tool history", `{"ok":true}`, strings.Repeat("x", 2<<20)},
+		{"escaped final", nearLimit, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalText, _ := json.Marshal(tc.final)
+			final := strings.Replace(outputFinal, `"{\"ok\":true}"`, string(finalText), 1)
+			toolText, _ := json.Marshal(tc.history)
+			tool := `{"id":"msg_tool","type":"assistant","time":{"created":1,"completed":2},"finish":"tool-calls","content":[{"type":"tool","state":{"content":` + string(toolText) + `}}]}`
+			data := outputEnvelope(final, tool, outputPrompt)
+			if len(data) <= MaxOutputBytes {
+				t.Fatal("regression fixture must exceed final result limit")
+			}
+			engine := &Engine{Transport: outputTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data))}, nil
+			})}
+			got, err := engine.ReadOutput(context.Background(), Request{Key: "run"}, Prepared{SessionID: "ses_run", MessageID: "msg_prompt", Lease: sandbox.Lease{Host: "sandbox"}})
+			if err != nil || string(got) != tc.final {
+				t.Fatalf("final bytes=%d, envelope bytes=%d: %v", len(tc.final), len(data), err)
+			}
+		})
+	}
+}
+
+func TestParseOutputAllowsCompletedAutomaticCompaction(t *testing.T) {
+	// OpenCode 2.0.26 Session.Message.Compaction.Completed has status, reason, summary, recent, and time.created.
+	message := `{"id":"compact","type":"compaction","status":"completed","reason":"auto","summary":"Previous investigation","recent":"Latest context","time":{"created":2}}`
+	got, err := ParseOutput(json.RawMessage(outputEnvelope(outputFinal, message, outputPrompt)), "msg_prompt")
+	if err != nil || string(got) != `{"ok":true}` {
+		t.Fatalf("completed automatic compaction: %v", err)
+	}
+	for _, invalid := range []string{strings.Replace(message, `"completed"`, `"running"`, 1), strings.Replace(message, `"completed"`, `"failed"`, 1), strings.Replace(message, `"auto"`, `"manual"`, 1)} {
+		if _, err := ParseOutput(json.RawMessage(outputEnvelope(outputFinal, invalid, outputPrompt)), "msg_prompt"); err == nil {
+			t.Fatal("accepted unrelated or incomplete compaction")
+		}
+	}
+}
+
+func TestParseOutputCompactionPreservesPromptBoundary(t *testing.T) {
+	compaction := `{"id":"compact","type":"compaction","status":"completed","reason":"auto","summary":"Previous investigation","recent":"Latest context","time":{"created":2}}`
+	for _, data := range []string{
+		outputEnvelope(outputFinal, compaction),
+		outputEnvelope(outputFinal, compaction, strings.Replace(outputPrompt, "msg_prompt", "msg_other", 1), outputPrompt),
+		outputEnvelope(compaction, outputFinal, outputPrompt),
+	} {
+		if _, err := ParseOutput(json.RawMessage(data), "msg_prompt"); err == nil {
+			t.Fatal("accepted compaction outside the original prompt run")
+		}
 	}
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-const CompilerPolicy = "workflow-v1:whole-json:scalar-or-ordered-array:all-steps-contribute:max32:input1MiB"
+const CompilerPolicy = "workflow-v2:whole-json:scalar-or-ordered-array:no-html-escape:all-steps-contribute:max32:input4MiB"
 
 type Snapshot struct {
 	Workflow Workflow                        `json:"workflow"`

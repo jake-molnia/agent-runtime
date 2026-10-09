@@ -155,7 +155,7 @@ By default, text or JSON larger than 32 KiB spills into attachment storage. The
 recipient sees restored text or JSON through the same interface. Files stay
 explicit attachments. `Prompt()` refuses file parts rather than silently hiding
 them or treating binary content as text; use a provider-native file/tool adapter.
-Limits are 32 parts, a 2 MiB stored envelope and rendered prompt, and 16 MiB per
+Limits are 32 parts, a 8 MiB stored envelope and rendered prompt, and 16 MiB per
 attachment and total expanded delivery. A reference does not remove the model's
 context limit.
 
