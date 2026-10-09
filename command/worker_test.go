@@ -102,21 +102,45 @@ func TestWorkerRequiresDeploymentOwnership(t *testing.T) {
 	for _, tagged := range []bool{false, true} {
 		t.Run(fmt.Sprintf("tagged-%t", tagged), func(t *testing.T) {
 			dir := t.TempDir()
-			definitions := `{"agent":{"pool":"pool","namespace":"agents","directory":"/workspace","timeout_seconds":60,"config":{}}}`
+			profile := "version: 1\nprofiles:\n  default:\n    pool: pool\n    namespace: agents\n    directory: /workspace\n"
 			clientID := "oauth-client"
 			if tagged {
-				definitions = `{"agent":{"pool":"pool","namespace":"agents","directory":"/workspace","timeout_seconds":60,"config":{},"tags":["tag:agent-sandbox"]}}`
+				profile += "    tags: [tag:agent-sandbox]\n"
 				clientID = ""
 			}
-			definitionsPath := filepath.Join(dir, "agents.json")
+			agentDir := filepath.Join(dir, "agents", "agent")
+			if err := os.MkdirAll(agentDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte("version: 1\ndescription: Test\nmodel: {provider: openai, id: gpt-5}\nexecution: {profile: default, timeout_seconds: 60}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "instructions.md"), []byte("Test instructions"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			workflowDir := filepath.Join(dir, "workflows")
+			if err := os.MkdirAll(workflowDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "output.schema.json"), []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte("version: 1\ndescription: Test\nmodel: {provider: openai, id: gpt-5}\nexecution: {profile: default, timeout_seconds: 60}\noutput_schema: output.schema.json\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workflowDir, "example.yaml"), []byte("steps:\n  first:\n    agent: agent\n    input: input\noutput: first\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			keyPath := filepath.Join(dir, "runtime-key")
-			if err := os.WriteFile(definitionsPath, []byte(definitions), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "deployment.yaml"), []byte(profile), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(keyPath, []byte(strings.Repeat("x", 32)), 0600); err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("AGENT_DEFINITIONS_FILE", definitionsPath)
+			t.Setenv("AGENT_DEFINITIONS_FILE", "")
+			t.Setenv("AGENT_DEFINITIONS_DIR", dir)
+			t.Setenv("AGENT_SNAPSHOT_DIR", t.TempDir())
 			t.Setenv("AGENT_SECRET_KEY_FILE", keyPath)
 			t.Setenv("TAILSCALE_CLIENT_ID", clientID)
 			t.Setenv("AGENT_DEPLOYMENT_ID", "")

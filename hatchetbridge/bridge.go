@@ -43,82 +43,174 @@ func Instrument(ctx context.Context, t *telemetry.Telemetry) (*hotel.Instrumento
 }
 
 type Input struct {
-	Agent string                `json:"agent"`
-	Run   orchestration.Request `json:"run"`
+	Agent    string                `json:"agent"`
+	Run      orchestration.Request `json:"run"`
+	Digest   string                `json:"digest,omitempty"`
+	Review   json.RawMessage       `json:"review,omitempty"`
+	GroupKey string                `json:"group_key,omitempty"`
 }
 type Output struct {
 	Prepared orchestration.Prepared `json:"prepared"`
 	Result   orchestration.Result   `json:"result"`
 	Artifact string                 `json:"artifact,omitempty"`
+	Data     json.RawMessage        `json:"data,omitempty"`
 }
 
-// Register retains completed sandboxes until their lease expiry so the app can retrieve results.
-// Applications may call Engine.Cleanup after persisting the native session export/artifacts.
-func Register(client *hatchet.Client, engine *orchestration.Engine, definitions map[string]orchestration.Definition) *hatchet.Workflow {
-	workflow := client.NewWorkflow("agent-run")
+func registerLifecycle(client *hatchet.Client, engine *orchestration.Engine, lifecycle Lifecycle) *hatchet.Workflow {
+	options := []hatchet.WorkflowOption{}
+	if lifecycle.Automation {
+		limit, strategy := int32(1), hatchet.GroupRoundRobin
+		options = append(options, hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: "input.group_key", MaxRuns: &limit, LimitStrategy: &strategy}))
+	}
+	workflow := client.NewWorkflow(lifecycle.Name, options...)
+	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input Input) (Spec, error) {
+		return lifecycle.resolve(ctx.GetContext(), input, ctx.WorkflowRunId())
+	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
 	provision := workflow.NewTask("provision", func(ctx hatchet.Context, input Input) (orchestration.Prepared, error) {
-		d, ok := definitions[input.Agent]
-		if !ok {
-			return orchestration.Prepared{}, errors.New("unknown agent definition")
+		var spec Spec
+		if err := ctx.StepOutput("resolve", &spec); err != nil {
+			return orchestration.Prepared{}, err
 		}
-		input.Run.Key = ctx.WorkflowRunId()
-		if input.Run.SubmittedAt.After(time.Now().Add(time.Second)) {
-			return orchestration.Prepared{}, errors.New("submission time is in the future")
+		if spec.Skip {
+			return orchestration.Prepared{}, nil
 		}
-		if input.Run.SubmittedAt.IsZero() {
-			input.Run.SubmittedAt = time.Now()
+		d, err := lifecycle.Definition(spec)
+		if err != nil {
+			return orchestration.Prepared{}, err
 		}
 		ctx.Log("Provisioning sandbox, credentials and identity")
 		bounded, cancel := context.WithTimeout(ctx.GetContext(), 3*time.Minute)
 		defer cancel()
-		out, err := engine.Provision(bounded, d, input.Run)
+		out, err := engine.Provision(bounded, d, spec.Run)
 		if err != nil {
 			return out, errors.New("agent provisioning failed")
 		}
 		ctx.Log("Sandbox and OpenCode ready")
 		return out, nil
-	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(4*time.Minute), hatchet.WithScheduleTimeout(time.Hour))
+	}, hatchet.WithParents(resolve), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(4*time.Minute), hatchet.WithScheduleTimeout(time.Hour))
 	execute := workflow.NewDurableTask("execute", func(ctx hatchet.DurableContext, input Input) (Output, error) {
-		d, ok := definitions[input.Agent]
-		if !ok {
-			return Output{}, errors.New("unknown agent definition")
+		var spec Spec
+		if err := ctx.StepOutput("resolve", &spec); err != nil {
+			return Output{}, err
+		}
+		if spec.Skip {
+			return Output{}, nil
+		}
+		d, err := lifecycle.Definition(spec)
+		if err != nil {
+			return Output{}, err
 		}
 		var prepared orchestration.Prepared
 		if err := ctx.StepOutput("provision", &prepared); err != nil {
 			return Output{}, err
 		}
-		input.Run.Key = ctx.WorkflowRunId()
-		input.Run.SubmittedAt = prepared.Started
+		spec.Run.SubmittedAt = prepared.Started
 		ctx.Log("Running agent session")
-		result, err := engine.Execute(ctx.GetContext(), d, input.Run, prepared, interactionWait(ctx, prepared.SessionID))
+		result, err := engine.Execute(ctx.GetContext(), d, spec.Run, prepared, interactionWait(ctx, prepared.SessionID))
 		if err != nil {
 			return Output{Prepared: prepared, Result: result}, errors.New("agent execution did not complete")
 		}
 		summary, _ := json.Marshal(map[string]string{"event": "agent.completed", "session_id": prepared.SessionID, "status": result.Status})
 		ctx.Log(string(summary))
 		return Output{Prepared: prepared, Result: result}, nil
-	}, hatchet.WithParents(provision), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))
+	}, hatchet.WithParents(resolve, provision), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))
 	if engine.Artifacts != nil {
 		collect := workflow.NewTask("collect", func(ctx hatchet.Context, input Input) (Output, error) {
+			var spec Spec
+			if err := ctx.StepOutput("resolve", &spec); err != nil {
+				return Output{}, err
+			}
+			if spec.Skip {
+				return Output{}, nil
+			}
 			var out Output
 			if err := ctx.StepOutput("execute", &out); err != nil {
 				return out, err
 			}
-			input.Run.Key = ctx.WorkflowRunId()
-			ref, err := engine.Collect(ctx.GetContext(), input.Run, out.Prepared)
+			ref, err := engine.Collect(ctx.GetContext(), spec.Run, out.Prepared)
 			out.Artifact = ref
 			return out, err
-		}, hatchet.WithParents(execute), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(2*time.Minute))
+		}, hatchet.WithParents(resolve, execute), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(2*time.Minute))
+		parent := collect
+		cleanupParents := []*hatchet.Task{resolve, collect}
+		if lifecycle.Validate != nil {
+			parent = workflow.NewTask("validate", func(ctx hatchet.Context, input Input) (Output, error) {
+				var spec Spec
+				if err := ctx.StepOutput("resolve", &spec); err != nil {
+					return Output{}, err
+				}
+				if spec.Skip {
+					return Output{}, nil
+				}
+				var out Output
+				if err := ctx.StepOutput("collect", &out); err != nil {
+					return out, err
+				}
+				var err error
+				structured := lifecycle.Validate != nil
+				if lifecycle.Structured != nil {
+					structured, err = lifecycle.Structured(spec)
+					if err != nil {
+						return out, err
+					}
+				}
+				if structured {
+					out.Data, err = engine.ReadOutput(ctx.GetContext(), spec.Run, out.Prepared)
+					if err != nil {
+						return out, err
+					}
+					if err = lifecycle.Validate(spec, out.Data); err != nil {
+						return out, err
+					}
+				}
+				return out, nil
+			}, hatchet.WithParents(resolve, collect), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(2*time.Minute))
+			cleanupParents = append(cleanupParents, parent)
+		}
+		if lifecycle.Publish != nil {
+			parent = workflow.NewTask("publish", func(ctx hatchet.Context, input Input) (json.RawMessage, error) {
+				var spec Spec
+				if err := ctx.StepOutput("resolve", &spec); err != nil {
+					return nil, err
+				}
+				if spec.Skip {
+					return json.RawMessage(`{"status":"skipped"}`), nil
+				}
+				var out Output
+				if err := ctx.StepOutput("validate", &out); err != nil {
+					return nil, err
+				}
+				return lifecycle.Publish(ctx.GetContext(), spec, out.Data)
+			}, hatchet.WithParents(resolve, parent), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(2*time.Minute))
+			cleanupParents = append(cleanupParents, parent)
+		}
 		workflow.NewTask("cleanup", func(ctx hatchet.Context, input Input) (Output, error) {
+			var spec Spec
+			if err := ctx.StepOutput("resolve", &spec); err != nil {
+				return Output{}, err
+			}
+			if spec.Skip {
+				return Output{}, nil
+			}
 			var out Output
 			if err := ctx.StepOutput("collect", &out); err != nil {
 				return out, err
 			}
-			input.Run.Key = ctx.WorkflowRunId()
-			return out, engine.Cleanup(ctx.GetContext(), input.Run, out.Prepared)
-		}, hatchet.WithParents(collect), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(time.Minute))
+			return out, engine.Cleanup(ctx.GetContext(), spec.Run, out.Prepared)
+		}, hatchet.WithParents(cleanupParents...), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(time.Minute))
 	}
-	workflow.OnFailure(failureHandler(engine, definitions))
+	workflow.OnFailure(func(ctx hatchet.Context, input Input) (map[string]string, error) {
+		var spec Spec
+		if err := ctx.StepOutput("resolve", &spec); err != nil || spec.Skip {
+			return map[string]string{"status": "not_provisioned"}, nil
+		}
+		d, err := lifecycle.Definition(spec)
+		if err != nil {
+			return map[string]string{"status": "retained_until_expiry", "reason": "snapshot_unavailable"}, nil
+		}
+		input.Agent, input.Run = spec.Agent, spec.Run
+		return failureHandler(engine, map[string]orchestration.Definition{spec.Agent: d})(ctx, input)
+	})
 	return workflow
 }
 
@@ -174,6 +266,6 @@ func NotifyInteraction(ctx context.Context, client *hatchet.Client, sessionID st
 }
 
 // Submit stamps the enqueue time so startup metrics include Hatchet's scheduling delay.
-func Submit(ctx context.Context, client *hatchet.Client, agent, prompt string) (*hatchet.WorkflowRunRef, error) {
-	return client.RunNoWait(ctx, "agent-run", Input{Agent: agent, Run: orchestration.Request{Prompt: prompt, SubmittedAt: time.Now().UTC()}})
+func Submit(ctx context.Context, client *hatchet.Client, agent, digest, prompt string) (*hatchet.WorkflowRunRef, error) {
+	return SubmitInput(ctx, client, "agent-run", Input{Agent: agent, Digest: digest, Run: orchestration.Request{Prompt: prompt}})
 }

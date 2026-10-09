@@ -250,7 +250,7 @@ func waitReady(ctx context.Context, api dynamic.ResourceInterface, obj *unstruct
 				return nil, err
 			}
 		} else {
-			result, watchErr := consume(ctx, w, obj.GetUID())
+			result, watchErr := consume(ctx, w, uid)
 			w.Stop()
 			if result != nil || watchErr != nil {
 				return result, watchErr
