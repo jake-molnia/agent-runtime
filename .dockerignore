@@ -6,3 +6,4 @@ bin
 **/node_modules
 docs/research
 .env.*
+__pycache__

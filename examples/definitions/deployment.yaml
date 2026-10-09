@@ -7,5 +7,68 @@ profiles:
     pool: agent-pool
     namespace: agents
     directory: /workspace
+    mcp: [aio, browser]
     secret_files:
       openai: /secrets/openai-key
+mcp_servers:
+  aio:
+    url: http://127.0.0.1:18091/mcp
+    tools:
+      - sandbox_execute_bash
+      - sandbox_execute_code
+      - sandbox_file_operations
+      - sandbox_str_replace_editor
+      - sandbox_get_context
+      - sandbox_get_packages
+      - sandbox_load_skill
+      - documents_convert_to_markdown
+      - browser_get_info
+      - browser_gui_screenshot
+      - browser_gui_execute_action
+  browser:
+    url: http://127.0.0.1:8931/mcp
+    tools:
+      - browser_resize
+      - browser_console_messages
+      - browser_resume
+      - browser_highlight
+      - browser_hide_highlight
+      - browser_annotate
+      - browser_handle_dialog
+      - browser_emulate_media
+      - browser_evaluate
+      - browser_file_upload
+      - browser_drop
+      - browser_find
+      - browser_fill_form
+      - browser_press_key
+      - browser_type
+      - browser_mouse_move_xy
+      - browser_mouse_click_xy
+      - browser_mouse_drag_xy
+      - browser_mouse_down
+      - browser_mouse_up
+      - browser_mouse_wheel
+      - browser_navigate
+      - browser_navigate_back
+      - browser_network_requests
+      - browser_network_request
+      - browser_pdf_save
+      - browser_start_recording
+      - browser_stop_recording
+      - browser_run_code_unsafe
+      - browser_take_screenshot
+      - browser_snapshot
+      - browser_click
+      - browser_drag
+      - browser_hover
+      - browser_select_option
+      - browser_tabs
+      - browser_start_tracing
+      - browser_stop_tracing
+      - browser_start_video
+      - browser_stop_video
+      - browser_video_chapter
+      - browser_video_show_actions
+      - browser_video_hide_actions
+      - browser_wait_for

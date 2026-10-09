@@ -2,7 +2,8 @@
 
 `definitions` loads agent behavior and trusted deployment profiles separately.
 Authored model tools are denied unless an agent selects an approved remote MCP
-connection granted by its profile. `github.diff` remains an application
+connection or bundled skills. MCP connections must be granted by its profile.
+`github.diff` remains an application
 capability, not a model tool grant. Definitions do not load workflows.
 
 MCP-enabled native sessions disable auxiliary title generation and explicitly
@@ -103,7 +104,7 @@ the named file. Built-in lookups return independent values.
 
 ## Remote MCP grants
 
-Deployment owns the approved server URLs and exact native tool lists. Agents
+Deployment owns the approved server URLs and tool authorization mode. Agents
 select connection names with `mcp: [broker]`; their profiles must grant every
 selected connection with the same `mcp` list syntax. Unknown or ungranted
 connections fail loading, including unknown profile grants.
@@ -115,15 +116,33 @@ mcp_servers:
     tools: [read_diff, fetch_issue]
 ```
 
-Only `url` and `tools` are accepted. Commands, environment variables, OAuth
+For Aperture-managed catalogs, replace `tools` with `tool_policy: broker_catalog`.
+This explicitly trusts tools exposed by that broker for the sandbox identity.
+The compiler grants only the selected MCP action namespace; overlapping server
+namespaces and collisions with native actions fail validation. New authorized
+broker tools require no local list update. The broker must enforce authorization
+on invocation as well as catalog listing. Shell and workspace file tools remain
+denied locally. Exact `tools` lists remain the default.
+
+Only `url`, `tools`, and `tool_policy` are accepted. Commands, environment variables, OAuth
 credentials, tokens, passwords, and headers are not supported. URLs reject
 userinfo, queries, and fragments. HTTPS is required except for HTTP with a
-literal loopback IP for tests. Broker authentication belongs to deployment
+literal loopback IP, including the sandbox Aperture proxy at
+`http://127.0.0.1:8082/v1/mcp`. Broker authentication belongs to deployment
 network or mTLS configuration. Agent input cannot choose an endpoint.
 
 Native tool names must start with an ASCII letter, digit, or underscore and
 contain only letters, digits, underscores, hyphens, dots, or colons. Wildcard
 names, duplicate tools, and permission-name collisions fail loading.
+
+## Bundled skills
+
+`builtin_skills: [code-review, pstack-tdd]` selects skill IDs from the immutable
+image catalog. The snapshot pins its bundle digest. The sandbox checks that
+digest before starting OpenCode. Selected skills can read their trusted bundled
+reference files; they do not gain workspace reads, shell execution, or writes.
+Both worker and sandbox need the matching bundle. See
+[bundled engineering skills](../docs/sandbox-skills.md) for packaging and updates.
 
 ## Compilation and output validation
 
@@ -132,8 +151,10 @@ It combines instructions with skill content in sorted skill-name order.
 OpenCode V2 configuration contains `agents.authored.system`, `mode: primary`,
 and ordered `permissions` arrays at both global and agent scope, each containing
 `{action: "*", resource: "*", effect: "deny"}`. Selected MCP tools add exact
-`allow` rules after that deny rule at both scopes. No filesystem, shell, or
-wildcard tool allowance is added. Project configuration is disabled.
+`allow` rules after that deny rule at both scopes. Broker catalog mode grants
+the selected server namespace. Bundled skills add exact skill IDs and reads
+under the immutable skill trees. Shell, workspace reads, and writes remain
+denied. Project configuration is disabled.
 Legacy `agent`, `prompt`, `permission`, and `tools` fields are not emitted.
 
 The compiler targets OpenCode **v2.0.26**, commit
@@ -175,7 +196,8 @@ same snapshot again succeeds; corrupt existing snapshots are never overwritten.
 
 The SHA-256 digest includes the agent settings, instructions, skill content,
 schema, resolved profile, credential binding paths, and compiler policy version.
-Selected MCP URLs and tool lists are included; unselected registry entries are
+Selected MCP URLs, tool authorization mode, explicit lists, and any bundled skill
+manifest digest are included; unselected registry entries are
 excluded. MCP snapshots carry an explicit compiler policy marker, and unsupported
 markers cannot replay. Absent new fields use `omitempty` and preserve legacy
 snapshot digests and the previous deny-all compiler policy.

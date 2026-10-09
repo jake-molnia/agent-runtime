@@ -1,0 +1,12 @@
+{
+  "review": {
+    "installation_id": 2,
+    "repository_id": 1,
+    "repository": "example/repository",
+    "number": 1,
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "delivery_id": "manual-example-1"
+  },
+  "publish": false
+}

@@ -15,7 +15,7 @@ import (
 
 func webhookBody() string {
 	input, _ := fixture()
-	return fmt.Sprintf(`{"action":"opened","number":9,"installation":{"id":7},"repository":{"id":11,"full_name":"owner/repo"},"pull_request":{"number":9,"base":{"sha":%q,"repo":{"id":11,"full_name":"owner/repo"}},"head":{"sha":%q}}}`, input.BaseSHA, input.HeadSHA)
+	return fmt.Sprintf(`{"action":"opened","number":9,"installation":{"id":7},"repository":{"id":11,"full_name":"owner/repo"},"pull_request":{"number":9,"draft":false,"state":"open","base":{"sha":%q,"repo":{"id":11,"full_name":"owner/repo"}},"head":{"sha":%q}}}`, input.BaseSHA, input.HeadSHA)
 }
 func signedRequest(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
@@ -36,6 +36,8 @@ func TestWebhookValidationAndSubmission(t *testing.T) {
 		submitError bool
 	}{
 		{name: "accepted", status: 202},
+		{name: "draft does not consume admission key", body: func(body string) string { return strings.Replace(body, `"draft":false`, `"draft":true`, 1) }, status: 204},
+		{name: "closed does not consume admission key", body: func(body string) string { return strings.Replace(body, `"state":"open"`, `"state":"closed"`, 1) }, status: 204},
 		{name: "bad signature", mutate: func(request *http.Request) {
 			request.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
 		}, status: 401},

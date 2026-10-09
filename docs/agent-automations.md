@@ -80,9 +80,19 @@ connections enter the native session configuration. URLs reject credentials,
 query strings and fragments. HTTPS is required except literal-loopback HTTP for
 local testing. Arbitrary local subprocess MCP servers are not supported.
 
-The pinned native config preserves deny-all and grants only exact approved MCP
-actions. Filesystem, shell, arbitrary execute, unapproved tools and interactive
-OAuth enrollment remain unavailable. OpenCode initializes and manages the remote
+The pinned native config preserves deny-all and grants approved MCP actions.
+To let Aperture own the catalog, use `tool_policy: broker_catalog` instead of
+`tools`. That explicit mode grants the selected server's action namespace while
+the broker enforces identity-based tool authorization. Server namespace overlaps
+are rejected. With ephemeral profile tags and `APERTURE_UPSTREAM` set on the
+sandbox, use `http://127.0.0.1:8082/v1/mcp` to reach Aperture through the sandbox's
+Tailscale identity. Adding an authorized backend in Aperture then requires no
+duplicate tool list here.
+
+Shell, workspace filesystem access, arbitrary execute, and interactive OAuth
+enrollment remain unavailable. Agents can separately select image-bundled skills
+with `builtin_skills`; those grants permit reading only the trusted skill trees.
+OpenCode initializes and manages the remote
 MCP connections within each isolated session; deleting the sandbox terminates them.
 Use deployment-managed network identity/TLS for the approved broker. This format
 does not put bearer tokens or private keys into workflow snapshots.
@@ -156,10 +166,10 @@ agent-runtime worker
 agent-runtime run review-change --input input.json
 ```
 
-The worker registers only configured workflow files. It fails explicitly if none
-exist. There is no automatically registered `agent-run` or GitHub review graph,
-no GitHub App/private-key/webhook/database prerequisite, and no custom Go worker
-needed for declarative workflows. Adapters can normalize events and submit the
+The worker registers configured workflow files and any explicitly enabled
+[GitHub review integration](github-review.md). It fails if no workflows exist.
+Generic workflows have no GitHub App/private-key/webhook/database prerequisite
+and need no custom Go worker. Adapters can normalize events and submit the
 same configured workflow, or expose authorized MCP operations.
 
 `agents defaults|list|inspect` and `workflows list|inspect` provide diagnostics.
