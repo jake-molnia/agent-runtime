@@ -11,7 +11,7 @@ import (
 func RegisterT3(client *hatchet.Client, controller *lifecycle.Controller) *hatchet.Workflow {
 	one := int32(1)
 	strategy := hatchet.QueueNewest
-	workflow := client.NewWorkflow("t3-workspace-lifecycle", hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: "input.workspaceId", MaxRuns: &one, LimitStrategy: &strategy, Name: "t3-workspace", IsTenantScoped: true}), hatchet.WithWorkflowIdempotency(hatchet.IdempotencyConfig{Expression: "input.workspaceId + ':' + input.operationId", TTL: 24 * time.Hour, Method: hatchet.IdempotencyMethodTTL}))
+	workflow := client.NewWorkflow("t3-workspace-lifecycle", hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: "input.workspaceId", MaxRuns: &one, LimitStrategy: &strategy, Name: "t3-workspace", IsTenantScoped: true}), hatchet.WithWorkflowIdempotency(hatchet.IdempotencyConfig{Expression: "input.workspaceId + ':' + input.operationId", TTL: 24 * time.Hour, Method: hatchet.IdempotencyMethodStatus}))
 	workflow.NewTask("transition", func(ctx hatchet.Context, r lifecycle.Request) (lifecycle.State, error) {
 		bounded, cancel := context.WithTimeout(ctx.GetContext(), 4*time.Minute)
 		defer cancel()
@@ -36,6 +36,10 @@ func (t T3Tasks) Submit(ctx context.Context, r lifecycle.Request) (string, error
 	}
 	return ref.RunId, nil
 }
-func (t T3Tasks) Status(ctx context.Context, id string) (any, error) {
-	return t.Client.Runs().Get(ctx, id)
+func (t T3Tasks) Status(ctx context.Context, id string) (lifecycle.TaskStatus, error) {
+	run, err := t.Client.Runs().Get(ctx, id)
+	if err != nil {
+		return lifecycle.TaskStatus{}, err
+	}
+	return lifecycle.TaskStatus{ID: id, Status: string(run.Run.Status)}, nil
 }

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t3-control
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t3-workspaces

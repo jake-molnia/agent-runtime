@@ -58,8 +58,10 @@ func t3Worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return worker.StartBlocking(ctx) })
+	workerContext, stop := context.WithCancel(ctx)
+	defer stop()
+	g, ctx := errgroup.WithContext(workerContext)
+	g.Go(func() error { defer stop(); return worker.StartBlocking(ctx) })
 	g.Go(func() error {
 		return httpServer(ctx, env("T3_CONTROL_ADDR", ":8084"), lifecycle.Handler(controller, hatchetbridge.T3Tasks{Client: client, Workflow: workflow}, strings.TrimSpace(string(apiToken))))
 	})

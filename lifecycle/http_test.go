@@ -9,14 +9,21 @@ import (
 	"testing"
 )
 
-type fakeTasks struct{ submissions int }
+type fakeTasks struct {
+	submissions int
+	status      string
+}
 
 func (f *fakeTasks) Submit(context.Context, Request) (string, error) {
 	f.submissions++
 	return "task-one", nil
 }
-func (f *fakeTasks) Status(context.Context, string) (any, error) {
-	return map[string]string{"status": "RUNNING"}, nil
+func (f *fakeTasks) Status(_ context.Context, id string) (TaskStatus, error) {
+	status := f.status
+	if status == "" {
+		status = "RUNNING"
+	}
+	return TaskStatus{ID: id, Status: status}, nil
 }
 func TestControlHTTPAuthorizationAndDurableSubmission(t *testing.T) {
 	c, _, _ := fixture(t)
@@ -83,5 +90,28 @@ func TestWorkerHTTPContractAndSanitizedErrors(t *testing.T) {
 	}
 	if err = worker.Resume(context.Background(), server.URL, "secret-token", WorkerRequest{}); err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Fatal("worker failure leaked secret or was accepted")
+	}
+}
+
+func TestFailedLifecycleSubmissionCanRetrySameIntent(t *testing.T) {
+	c, _, _ := fixture(t)
+	tasks := &fakeTasks{}
+	handler := Handler(c, tasks, "internal-key")
+	body, _ := json.Marshal(request(1, EnsureRunning))
+	submit := func() {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/v1/operations", strings.NewReader(string(body)))
+		req.Header.Set("Authorization", "Bearer internal-key")
+		out := httptest.NewRecorder()
+		handler.ServeHTTP(out, req)
+		if out.Code != 202 {
+			t.Fatalf("submit: %d %s", out.Code, out.Body.String())
+		}
+	}
+	submit()
+	tasks.status = "FAILED"
+	submit()
+	if tasks.submissions != 2 {
+		t.Fatal("failed task permanently pinned the request")
 	}
 }

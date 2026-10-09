@@ -1,0 +1,98 @@
+name: T3 images
+on:
+  workflow_dispatch:
+    inputs:
+      t3_ref:
+        description: Full commit SHA from jake-molnia/t3code; overrides images/t3/source.lock.json
+        required: false
+        type: string
+  push:
+    branches: [t3/sandbox-session-lifecycle]
+    paths:
+      - .github/workflows/t3-images.yml
+      - images/t3/**
+      - deploy/t3/**
+      - go.mod
+      - go.sum
+      - command/**
+      - lifecycle/**
+      - hatchetbridge/**
+      - cmd/agent-runtime/**
+      - sandbox/**
+permissions:
+  contents: read
+concurrency:
+  group: t3-images-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [t3-worker, t3-web, t3-runtime]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: runtime
+          persist-credentials: false
+      - name: Resolve pinned T3 source
+        id: source
+        env:
+          REQUESTED_REF: ${{ inputs.t3_ref }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          lock = json.load(open('runtime/images/t3/source.lock.json'))
+          ref = os.environ.get('REQUESTED_REF') or lock['ref']
+          if not re.fullmatch(r'[0-9a-f]{40}', ref):
+              raise SystemExit('Set images/t3/source.lock.json ref or t3_ref to the committed T3 fork SHA before building.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"repository={lock['repository']}\nref={ref}\n")
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.ref }}
+          path: t3src
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and execute image verification
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: runtime
+          file: runtime/images/t3/Dockerfile
+          build-contexts: t3src=./t3src
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          tags: t3-local:${{ matrix.target }}-${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.target }}.tar
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+      - name: Verify exported image
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNTIME_SHA: ${{ github.sha }}
+          T3_SHA: ${{ steps.source.outputs.ref }}
+        run: |
+          docker load --input "$RUNNER_TEMP/$TARGET.tar"
+          image="t3-local:$TARGET-$RUNTIME_SHA"
+          case "$TARGET" in
+            t3-worker) python3 runtime/images/t3/smoke-image.py "$TARGET" "$image" ;;
+            t3-web) python3 runtime/images/t3/smoke-image.py "$TARGET" "$image" ;;
+            t3-runtime) docker run --rm --network none "$image" version ;;
+          esac
+          docker image inspect "$image" > "$RUNNER_TEMP/$TARGET.inspect.json"
+          sha256sum "$RUNNER_TEMP/$TARGET.tar" > "$RUNNER_TEMP/$TARGET.tar.sha256"
+          printf 'runtime=%s\nt3=%s\n' "$RUNTIME_SHA" "$T3_SHA" > "$RUNNER_TEMP/$TARGET.sources.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.target }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/${{ matrix.target }}.tar
+            ${{ runner.temp }}/${{ matrix.target }}.tar.sha256
+            ${{ runner.temp }}/${{ matrix.target }}.inspect.json
+            ${{ runner.temp }}/${{ matrix.target }}.sources.txt
+          compression-level: 0
+          retention-days: 7

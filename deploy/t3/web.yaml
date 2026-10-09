@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: t3-central-state
+  namespace: t3-control
+spec:
+  storageClassName: REPLACE_STORAGE_CLASS
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 20Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: t3-web
+  namespace: t3-control
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: t3-web}
+  template:
+    metadata:
+      labels: {app: t3-web}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: web
+          image: REPLACE_REGISTRY/t3-web@sha256:REPLACE_DIGEST
+          ports:
+            - {name: web, containerPort: 3773}
+          env:
+            - {name: AGENT_RUNTIME_URL, value: 'http://t3-runtime.t3-control.svc.cluster.local:8084'}
+            - {name: AGENT_RUNTIME_PROFILE, value: t3}
+            - name: AGENT_RUNTIME_TOKEN
+              valueFrom:
+                secretKeyRef: {name: t3-runtime-secrets, key: t3-control-token}
+            - {name: T3_MCP_ADVERTISED_URL, value: 'http://t3-web.t3-control.svc.cluster.local:3773/mcp'}
+          readinessProbe:
+            tcpSocket: {port: web}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: state, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: state
+          persistentVolumeClaim: {claimName: t3-central-state}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: t3-web
+  namespace: t3-control
+spec:
+  selector: {app: t3-web}
+  ports:
+    - {name: web, port: 3773, targetPort: web}

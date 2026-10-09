@@ -188,7 +188,7 @@ func (c *Controller) Access(ctx context.Context, profile, workspace string) (Acc
 		return Access{}, err
 	}
 	a := Access{State: s}
-	if s.Phase == "running" && s.Handle != nil && s.Request.Action == EnsureRunning && s.CompletedOperation == s.Request.OperationID {
+	if s.Phase == "running" && s.Handle != nil {
 		observation, err := c.Control.ObserveWorkspace(ctx, *s.Handle)
 		if err != nil {
 			return Access{}, errors.New("current allocation could not be observed")

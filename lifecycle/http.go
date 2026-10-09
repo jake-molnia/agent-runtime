@@ -12,9 +12,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
+type TaskStatus struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func (s TaskStatus) retryable() bool { return s.Status == "FAILED" || s.Status == "CANCELLED" }
+
 type Tasks interface {
 	Submit(context.Context, Request) (string, error)
-	Status(context.Context, string) (any, error)
+	Status(context.Context, string) (TaskStatus, error)
 }
 
 func Handler(c *Controller, tasks Tasks, token string) http.Handler {
@@ -37,6 +44,16 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 			return
 		}
 		taskID := state.TaskID
+		if taskID != "" && state.CompletedOperation != request.OperationID {
+			status, err := tasks.Status(r.Context(), taskID)
+			if err != nil {
+				http.Error(w, "task status unavailable; retry same operation", 503)
+				return
+			}
+			if status.retryable() {
+				taskID = ""
+			}
+		}
 		if taskID == "" {
 			taskID, err = tasks.Submit(r.Context(), request)
 			if err != nil {
@@ -72,6 +89,10 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 		writeJSON(w, 200, access)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		given := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || token == "" || subtle.ConstantTimeCompare([]byte(given), []byte(token)) != 1 {
 			http.Error(w, "unauthorized", 401)

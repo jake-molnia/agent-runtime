@@ -290,3 +290,28 @@ func TestAccessObservesWorkerRestartAndRejectsStaleReadiness(t *testing.T) {
 		t.Fatal("cached readiness admitted missing pod")
 	}
 }
+
+func TestBusyStopStillAllowsObservingLiveWorker(t *testing.T) {
+	c, _, worker := fixture(t)
+	ctx := context.Background()
+	state := run(t, c, request(1, EnsureRunning))
+	stop := stopRequest(2, Suspend, state)
+	if _, err := c.Admit(ctx, stop); err != nil {
+		t.Fatal(err)
+	}
+	worker.busy = true
+	if _, err := c.Execute(ctx, stop); err == nil {
+		t.Fatal("busy worker was stopped")
+	}
+	access, err := c.Access(ctx, "default", state.Request.WorkspaceID)
+	if err != nil || access.Token == "" || access.State.Identity.Incarnation != state.Identity.Incarnation {
+		t.Fatal("failed stop hid a live worker from observers")
+	}
+	if access.State.CompletedOperation == stop.OperationID {
+		t.Fatal("uncompleted stop reported as completed")
+	}
+	worker.busy = false
+	if _, err = c.Execute(ctx, stop); err != nil {
+		t.Fatal(err)
+	}
+}
