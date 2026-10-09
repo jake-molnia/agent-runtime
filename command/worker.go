@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/artifacts"
 	"github.com/jake-molnia/agent-runtime/githubreview"
@@ -109,10 +110,24 @@ func worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var handler *githubreview.Handler
+	reloadReview := func() (githubreview.Integration, error) { return githubreview.LoadIntegration(reviewConfigPath()) }
+	if reviewsEnabled {
+		var closeReview func()
+		handler, closeReview, err = reviewHandler(ctx, reviewConfig)
+		if err != nil {
+			return err
+		}
+		defer closeReview()
+	}
 	var reviewChild *hatchet.Workflow
 	registered := make([]hatchet.WorkflowBase, 0, len(plans))
 	for _, plan := range plans {
-		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan)
+		hooks := []hatchetbridge.ConfiguredHooks{}
+		if reviewsEnabled && plan.Workflow.Name == reviewConfig.Workflow {
+			hooks = append(hooks, hatchetbridge.ReviewBeforeStep(reloadReview, handler))
+		}
+		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan, hooks...)
 		if err != nil {
 			return err
 		}
@@ -127,17 +142,16 @@ func worker(ctx context.Context) error {
 		if reviewChild == nil {
 			return errors.New("configured review workflow missing")
 		}
-		handler, closeReview, err := reviewHandler(ctx, reviewConfig)
+		adapter, err := hatchetbridge.RegisterReview(client, reviewConfig, reloadReview, handler, reviewChild, plans[reviewConfig.Workflow], engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")})
 		if err != nil {
 			return err
 		}
-		defer closeReview()
-		adapter, err := hatchetbridge.RegisterReview(client, reviewConfig, func() (githubreview.Integration, error) { return githubreview.LoadIntegration(reviewConfigPath()) }, handler, reviewChild, plans[reviewConfig.Workflow], engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")})
+		ingress, err := hatchetbridge.RegisterReviewIngress(client, reviewConfig, adapter, plans[reviewConfig.Workflow].Digest, reloadReview, handler)
 		if err != nil {
 			return err
 		}
-		registered = append(registered, adapter)
-		webhook, err = reviewWebhook(reviewConfig, adapter)
+		registered = append(registered, adapter, ingress)
+		webhook, err = reviewWebhook(reviewConfig, ingress)
 		if err != nil {
 			return err
 		}
@@ -149,7 +163,8 @@ func worker(ctx context.Context) error {
 	if err != nil || slots < 1 {
 		return errors.New("invalid worker slots")
 	}
-	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(registered...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots), hatchet.WithLabels(labels))
+	workerName := env("AGENT_WORKER_NAME", "agent-runtime") + "-" + uuid.NewString()
+	worker, err := client.NewWorker(workerName, hatchet.WithWorkflows(registered...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots), hatchet.WithLabels(labels))
 	if err != nil {
 		return err
 	}
@@ -158,7 +173,11 @@ func worker(ctx context.Context) error {
 		return err
 	}
 	worker.Use(instrument.Middleware())
+	health := &workerHealth{}
 	mux := http.NewServeMux()
+	for _, path := range []string{"/healthz", "/startupz", "/readyz"} {
+		mux.Handle(path, health)
+	}
 	mux.Handle("/metrics", tel.Handler)
 	if webhook != nil {
 		mux.Handle("/webhooks/github", webhook)
@@ -182,6 +201,7 @@ func worker(ctx context.Context) error {
 			}
 		})
 	}
+	g.Go(func() error { return health.monitor(ctx, workerName, client.Workers().List) })
 	g.Go(func() error { return httpServer(ctx, ":9091", mux) })
 	g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
 	return g.Wait()
