@@ -231,7 +231,11 @@ func ready(obj *unstructured.Unstructured) (bool, error) {
 	return false, nil
 }
 func waitReady(ctx context.Context, api dynamic.ResourceInterface, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	uid := obj.GetUID()
 	for {
+		if obj.GetUID() != uid {
+			return nil, errors.New("sandbox resource replaced")
+		}
 		if ok, err := ready(obj); ok || err != nil {
 			return obj, err
 		}
@@ -242,7 +246,7 @@ func waitReady(ctx context.Context, api dynamic.ResourceInterface, obj *unstruct
 				return nil, err
 			}
 		} else {
-			result, watchErr := consume(ctx, w, obj.GetUID())
+			result, watchErr := consume(ctx, w, uid)
 			w.Stop()
 			if result != nil || watchErr != nil {
 				return result, watchErr
