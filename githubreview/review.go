@@ -42,17 +42,25 @@ type Resolved struct {
 	Key    string `json:"key"`
 	Prompt string `json:"prompt"`
 	Skip   bool   `json:"skip"`
+	Rule   Rule   `json:"rule"`
+	Reason string `json:"reason,omitempty"`
 }
 type Outcome struct {
 	Status   string `json:"status"`
 	ReviewID int64  `json:"review_id"`
 }
 type PullRequest struct {
-	InstallationID, RepositoryID int64
-	Repository                   string
-	Number                       int
-	BaseSHA, HeadSHA, State      string
-	Draft                        bool
+	InstallationID int64    `json:"installation_id"`
+	RepositoryID   int64    `json:"repository_id"`
+	Repository     string   `json:"repository"`
+	Number         int      `json:"number"`
+	BaseSHA        string   `json:"base_sha"`
+	HeadSHA        string   `json:"head_sha"`
+	State          string   `json:"state"`
+	Draft          bool     `json:"draft"`
+	BaseBranch     string   `json:"base_branch"`
+	Author         string   `json:"author"`
+	Labels         []string `json:"labels"`
 }
 type File struct {
 	Path  string `json:"filename"`
@@ -97,15 +105,32 @@ type Store interface {
 	WithLock(context.Context, string, func(LockedStore) error) error
 }
 type Handler struct {
-	Client API
-	Store  Store
+	Client   API
+	Store    Store
+	rule     Rule
+	Enrolled func(Input) (bool, error)
 }
 
-func NewHandler(client API, store Store) (*Handler, error) {
+func NewHandler(client API, store Store, rules ...Rule) (*Handler, error) {
 	if client == nil || store == nil {
 		return nil, errors.New("GitHub client and durable store are required")
 	}
-	return &Handler{Client: client, Store: store}, nil
+	if len(rules) > 1 {
+		return nil, errors.New("only one automation rule is allowed")
+	}
+	var rule Rule
+	if len(rules) == 1 {
+		rule = rules[0]
+		if rule.Automation == "" || len(rule.Automation) > 64 || strings.TrimSpace(rule.Automation) != rule.Automation || strings.ContainsAny(rule.Automation, "\x00\r\n") {
+			return nil, errors.New("automation rule requires a bounded name")
+		}
+	}
+	if err := rule.Selection.Validate(); err != nil {
+		return nil, err
+	}
+	data, _ := json.Marshal(rule)
+	json.Unmarshal(data, &rule)
+	return &Handler{Client: client, Store: store, rule: rule}, nil
 }
 func validateInput(input Input) error {
 	if input.InstallationID <= 0 || input.RepositoryID <= 0 || input.Number <= 0 || !validRepository(input.Repository) || !shaPattern.MatchString(input.BaseSHA) || !shaPattern.MatchString(input.HeadSHA) || len(input.DeliveryID) > 256 {
@@ -113,7 +138,11 @@ func validateInput(input Input) error {
 	}
 	return nil
 }
-func reviewKey(input Input, digest string) string {
+func reviewKey(input Input, digest string, rules ...Rule) string {
+	if len(rules) == 1 && rules[0].Automation != "" {
+		data, _ := json.Marshal(rules[0])
+		digest += string(data)
+	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/%s", input.RepositoryID, input.Number, input.HeadSHA, digest)))
 	return hex.EncodeToString(sum[:])
 }
@@ -131,14 +160,24 @@ func validateCanonical(input Input, current PullRequest, checkBase bool) error {
 	return nil
 }
 func (handler *Handler) Resolve(ctx context.Context, input Input, digest, runID string) (Resolved, error) {
-	resolved := Resolved{Input: input, Digest: digest}
+	resolved := Resolved{Input: input, Digest: digest, Rule: handler.rule}
 	if err := validateInput(input); err != nil {
 		return resolved, err
 	}
 	if digest == "" || len(digest) > 256 || runID == "" || len(runID) > 256 {
 		return resolved, errors.New("digest and run ID are required and bounded")
 	}
-	resolved.Key = reviewKey(input, digest)
+	resolved.Key = reviewKey(input, digest, handler.rule)
+	if handler.Enrolled != nil {
+		allowed, err := handler.Enrolled(input)
+		if err != nil {
+			return resolved, err
+		}
+		if !allowed {
+			resolved.Skip, resolved.Reason = true, "repository_not_enrolled"
+			return resolved, nil
+		}
+	}
 	err := handler.Store.WithLock(ctx, prKey(input), func(store LockedStore) error {
 		current, err := handler.Client.Canonical(ctx, input)
 		if err != nil {
@@ -147,8 +186,9 @@ func (handler *Handler) Resolve(ctx context.Context, input Input, digest, runID 
 		if err = validateCanonical(input, current, true); err != nil {
 			return err
 		}
-		if current.Draft || current.State == "closed" {
+		if decision := handler.rule.Selection.Evaluate(current, nil); !decision.Eligible && decision.Reason != "no_matching_changed_paths" {
 			resolved.Skip = true
+			resolved.Reason = decision.Reason
 			return nil
 		}
 		record, exists, err := store.Load(ctx, resolved.Key)
@@ -157,6 +197,7 @@ func (handler *Handler) Resolve(ctx context.Context, input Input, digest, runID 
 		}
 		if exists && record.Status == "completed" {
 			resolved.Skip = true
+			resolved.Reason = "already_reviewed"
 			return nil
 		}
 		files, err := handler.Client.Files(ctx, input)
@@ -166,6 +207,10 @@ func (handler *Handler) Resolve(ctx context.Context, input Input, digest, runID 
 		if _, err = changedLines(files); err != nil {
 			return err
 		}
+		if decision := handler.rule.Selection.Evaluate(current, files); !decision.Eligible {
+			resolved.Skip, resolved.Reason = true, decision.Reason
+			return nil
+		}
 		current, err = handler.Client.Canonical(ctx, input)
 		if err != nil {
 			return err
@@ -173,8 +218,9 @@ func (handler *Handler) Resolve(ctx context.Context, input Input, digest, runID 
 		if err = validateCanonical(input, current, true); err != nil {
 			return err
 		}
-		if current.Draft || current.State == "closed" {
+		if decision := handler.rule.Selection.Evaluate(current, files); !decision.Eligible {
 			resolved.Skip = true
+			resolved.Reason = decision.Reason
 			return nil
 		}
 		diff, err := json.Marshal(files)
@@ -197,11 +243,21 @@ func (handler *Handler) Publish(ctx context.Context, resolved Resolved, output j
 	if err := validateInput(resolved.Input); err != nil {
 		return outcome, err
 	}
-	if resolved.Digest == "" || len(resolved.Digest) > 256 || resolved.Key != reviewKey(resolved.Input, resolved.Digest) {
+	if resolved.Digest == "" || len(resolved.Digest) > 256 || resolved.Rule.Automation != handler.rule.Automation || resolved.Rule.Selection.Validate() != nil || resolved.Key != reviewKey(resolved.Input, resolved.Digest, resolved.Rule) {
 		return outcome, errors.New("invalid resolved review key")
 	}
 	if resolved.Skip {
 		return outcome, nil
+	}
+	if handler.Enrolled != nil {
+		allowed, err := handler.Enrolled(resolved.Input)
+		if err != nil {
+			return outcome, err
+		}
+		if !allowed {
+			outcome.Status = "repository_not_enrolled"
+			return outcome, nil
+		}
 	}
 	err := handler.Store.WithLock(ctx, prKey(resolved.Input), func(store LockedStore) error {
 		record, exists, err := store.Load(ctx, resolved.Key)
@@ -222,9 +278,19 @@ func (handler *Handler) Publish(ctx context.Context, resolved Resolved, output j
 		if err = validateCanonical(resolved.Input, current, false); err != nil {
 			return err
 		}
-		if current.HeadSHA != resolved.Input.HeadSHA || current.BaseSHA != resolved.Input.BaseSHA || current.Draft || current.State == "closed" {
+		if current.HeadSHA != resolved.Input.HeadSHA || current.BaseSHA != resolved.Input.BaseSHA {
 			outcome.Status = "stale"
 			return nil
+		}
+		for _, selection := range []Selection{handler.rule.Selection, resolved.Rule.Selection} {
+			decision := selection.Evaluate(current, nil)
+			if !decision.Eligible && decision.Reason != "no_matching_changed_paths" {
+				outcome.Status = "ineligible"
+				if decision.Reason == "draft_pull_request" || decision.Reason == "closed_pull_request" {
+					outcome.Status = "stale"
+				}
+				return nil
+			}
 		}
 		marker := "<!-- agent-runtime-review:" + resolved.Key + " -->"
 		reviews, err := handler.Client.Reviews(ctx, resolved.Input)
@@ -250,6 +316,10 @@ func (handler *Handler) Publish(ctx context.Context, resolved Resolved, output j
 		files, err := handler.Client.Files(ctx, resolved.Input)
 		if err != nil {
 			return err
+		}
+		if !handler.rule.Selection.Evaluate(current, files).Eligible || !resolved.Rule.Selection.Evaluate(current, files).Eligible {
+			outcome.Status = "ineligible"
+			return nil
 		}
 		pinned, err := pinnedFiles(resolved)
 		if err != nil {
@@ -278,11 +348,21 @@ func (handler *Handler) Publish(ctx context.Context, resolved Resolved, output j
 		if err = validateCanonical(resolved.Input, current, false); err != nil {
 			return err
 		}
-		if current.HeadSHA != resolved.Input.HeadSHA || current.BaseSHA != resolved.Input.BaseSHA || current.Draft || current.State == "closed" {
+		if current.HeadSHA != resolved.Input.HeadSHA || current.BaseSHA != resolved.Input.BaseSHA || !handler.rule.Selection.Evaluate(current, files).Eligible || !resolved.Rule.Selection.Evaluate(current, files).Eligible {
 			outcome.Status = "stale"
 			return nil
 		}
 		record.Status = "publishing"
+		if handler.Enrolled != nil {
+			allowed, err := handler.Enrolled(resolved.Input)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				outcome.Status = "repository_not_enrolled"
+				return nil
+			}
+		}
 		if err = store.Save(ctx, resolved.Key, record); err != nil {
 			return err
 		}

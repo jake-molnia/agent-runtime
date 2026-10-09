@@ -35,7 +35,16 @@ func worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(plans) == 0 {
+	automations, err := loadGitHubAutomations(catalog)
+	if err != nil {
+		return err
+	}
+	for name := range automations {
+		if _, collision := plans[name]; collision {
+			return errors.New("workflow and GitHub adapter names collide")
+		}
+	}
+	if len(plans) == 0 && len(automations) == 0 {
 		return errors.New("no workflows configured in workflows/; the worker has no baked-in workflows")
 	}
 	for _, plan := range plans {
@@ -112,6 +121,12 @@ func worker(ctx context.Context) error {
 		}
 		registered = append(registered, workflow)
 	}
+	adapters, ingress, closeAdapters, err := registerGitHubWorkflows(ctx, client, engine, catalog, automations, snapshots)
+	if err != nil {
+		return err
+	}
+	defer closeAdapters()
+	registered = append(registered, adapters...)
 	slots, err := strconv.Atoi(env("AGENT_WORKER_SLOTS", "4"))
 	if err != nil || slots < 1 {
 		return errors.New("invalid worker slots")
@@ -127,6 +142,9 @@ func worker(ctx context.Context) error {
 	worker.Use(instrument.Middleware())
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", tel.Handler)
+	for path, handler := range ingress {
+		mux.Handle(path, handler)
+	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
 	g, ctx := errgroup.WithContext(workerCtx)

@@ -34,11 +34,33 @@ type Client struct {
 }
 type RejectedError struct{ Status int }
 
+type AppInfo struct {
+	ID          int64             `json:"id"`
+	Slug        string            `json:"slug"`
+	Permissions map[string]string `json:"permissions"`
+	Events      []string          `json:"events"`
+}
+
+func (client *Client) App(ctx context.Context) (AppInfo, error) {
+	token, err := client.jwt()
+	if err != nil {
+		return AppInfo{}, err
+	}
+	var app AppInfo
+	if err := client.request(ctx, http.MethodGet, "/app", token, nil, &app); err != nil {
+		return app, err
+	}
+	if app.ID != client.appID || app.Slug == "" || app.Permissions["pull_requests"] != "write" {
+		return AppInfo{}, errors.New("GitHub App identity or pull request write permission mismatch")
+	}
+	return app, nil
+}
+
 func (err *RejectedError) Error() string {
 	return fmt.Sprintf("GitHub rejected request with status %d", err.Status)
 }
 func NewClient(config ClientConfig) (*Client, error) {
-	if config.AppID <= 0 || config.PrivateKey == nil || config.PrivateKey.N == nil || config.PrivateKey.N.BitLen() < 2048 || len(config.Allowed) == 0 {
+	if config.AppID <= 0 || config.PrivateKey == nil || config.PrivateKey.N == nil || config.PrivateKey.N.BitLen() < 2048 || config.Allowed == nil {
 		return nil, errors.New("GitHub App identity, RSA key and allowlist are required")
 	}
 	if err := config.PrivateKey.Validate(); err != nil {
@@ -199,8 +221,15 @@ func (client *Client) Canonical(ctx context.Context, input Input) (PullRequest, 
 		Number int    `json:"number"`
 		State  string `json:"state"`
 		Draft  bool   `json:"draft"`
-		Base   struct {
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Base struct {
 			SHA  string `json:"sha"`
+			Ref  string `json:"ref"`
 			Repo struct {
 				ID       int64  `json:"id"`
 				FullName string `json:"full_name"`
@@ -217,6 +246,10 @@ func (client *Client) Canonical(ctx context.Context, input Input) (PullRequest, 
 		return PullRequest{}, errors.New("canonical pull request repository mismatch")
 	}
 	result := PullRequest{InstallationID: installation.ID, RepositoryID: repo.ID, Repository: repo.FullName, Number: pull.Number, BaseSHA: pull.Base.SHA, HeadSHA: pull.Head.SHA, State: pull.State, Draft: pull.Draft}
+	result.BaseBranch, result.Author = pull.Base.Ref, pull.User.Login
+	for _, label := range pull.Labels {
+		result.Labels = append(result.Labels, label.Name)
+	}
 	if err = validateCanonical(input, result, false); err != nil {
 		return PullRequest{}, err
 	}

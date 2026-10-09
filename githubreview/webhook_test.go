@@ -97,3 +97,19 @@ func TestWebhookValidationAndSubmission(t *testing.T) {
 		})
 	}
 }
+
+func TestMetadataChangeActionsAreAccepted(t *testing.T) {
+	for _, action := range []string{"labeled", "unlabeled", "edited", "converted_to_draft"} {
+		called := false
+		handler, err := NewWebhookHandler(WebhookConfig{Secret: []byte("webhook-secret"), Actions: []string{action}, Allowed: map[int64]int64{11: 7}, Submit: func(context.Context, Input) error { called = true; return nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.Replace(webhookBody(), "opened", action, 1)
+		result := httptest.NewRecorder()
+		handler.ServeHTTP(result, signedRequest(body))
+		if result.Code != http.StatusAccepted || !called {
+			t.Fatalf("%s: %d", action, result.Code)
+		}
+	}
+}

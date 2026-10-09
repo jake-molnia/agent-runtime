@@ -126,6 +126,29 @@ func runCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	automations, err := loadGitHubAutomations(catalog)
+	if err != nil {
+		return err
+	}
+	if _, exists := automations[args[0]]; exists {
+		if _, collision := plans[args[0]]; collision {
+			return errors.New("workflow and GitHub adapter names collide")
+		}
+		input, err := githubInvocation(catalog, automations, args[0], data)
+		if err != nil {
+			return err
+		}
+		client, err := hatchet.NewClient()
+		if err != nil {
+			return err
+		}
+		defer client.Close(context.Background())
+		ref, err := hatchetbridge.SubmitInput(ctx, client, args[0], input)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{"run_id": ref.RunId, "workflow": args[0]})
+	}
 	input, err := invocation(plans, args[0], data)
 	if err != nil {
 		return err

@@ -23,10 +23,10 @@ type WebhookConfig struct {
 }
 
 func NewWebhookHandler(config WebhookConfig) (http.Handler, error) {
-	if len(config.Secret) == 0 || len(config.Secret) > 1024 || len(config.Allowed) == 0 || config.Submit == nil || len(config.Actions) == 0 {
+	if len(config.Secret) == 0 || len(config.Secret) > 1024 || config.Allowed == nil || config.Submit == nil || len(config.Actions) == 0 {
 		return nil, errors.New("webhook secret, allowlist, actions and submit callback are required")
 	}
-	supported := map[string]bool{"opened": true, "reopened": true, "synchronize": true, "ready_for_review": true}
+	supported := map[string]bool{"opened": true, "reopened": true, "synchronize": true, "ready_for_review": true, "converted_to_draft": true, "labeled": true, "unlabeled": true, "edited": true}
 	actions := make(map[string]bool)
 	for _, action := range config.Actions {
 		if !supported[action] {

@@ -1,0 +1,14 @@
+{
+  "pull_request": {
+    "installation_id": 12345,
+    "repository_id": 67890,
+    "repository": "acme/api",
+    "number": 42,
+    "state": "open",
+    "draft": false,
+    "base_branch": "main",
+    "author": "human",
+    "labels": ["agent-review"]
+  },
+  "files": [{"filename": "src/main.go"}, {"filename": "docs/notes.md"}]
+}

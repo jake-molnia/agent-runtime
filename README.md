@@ -49,3 +49,7 @@ Read [setup and ownership](docs/agent-automations.md),
 [defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).
 GitHub remains an optional adapter library; no GitHub identity, workflow or secret
 configuration is required to use the runtime.
+
+See [GitHub management](docs/github-management.md) for optional App inspection,
+repository discovery/enrollment, PR selection, and eligibility explanations.
+GitHub adapter files are separately opt-in; generic workflows do not depend on them.

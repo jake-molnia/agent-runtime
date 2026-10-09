@@ -118,7 +118,7 @@ func ValidateResolvedOutput(resolved Resolved, output json.RawMessage) error {
 	if err := validateInput(resolved.Input); err != nil {
 		return err
 	}
-	if resolved.Digest == "" || len(resolved.Digest) > 256 || resolved.Key != reviewKey(resolved.Input, resolved.Digest) {
+	if resolved.Digest == "" || len(resolved.Digest) > 256 || resolved.Rule.Selection.Validate() != nil || resolved.Key != reviewKey(resolved.Input, resolved.Digest, resolved.Rule) {
 		return errors.New("invalid resolved review key")
 	}
 	files, err := pinnedFiles(resolved)
