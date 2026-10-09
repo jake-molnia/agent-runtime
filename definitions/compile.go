@@ -26,6 +26,7 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 	if err != nil {
 		return orchestration.Definition{}, err
 	}
+	snapshot = Snapshot{}
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return orchestration.Definition{}, err
 	}
@@ -44,6 +45,10 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 		Agent: "authored", Model: map[string]string{"providerID": agent.Model.Provider, "id": agent.Model.ID},
 		Timeout: time.Duration(agent.Execution.TimeoutSeconds) * time.Second, Tags: append([]string(nil), profile.Tags...),
 	}
+	for name := range snapshot.MCPServers {
+		definition.MCPServers = append(definition.MCPServers, name)
+	}
+	sort.Strings(definition.MCPServers)
 	definition.Secrets = func(ctx context.Context) (map[string]string, error) {
 		secrets := map[string]string{}
 		for provider, path := range profile.SecretFiles {
@@ -74,11 +79,33 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 			return nil, err
 		}
 		config = resolved.(map[string]any)
-		deny := []permission{{Action: "*", Resource: "*", Effect: "deny"}}
-		config["permissions"] = deny
-		config["agents"] = map[string]any{"authored": map[string]any{
-			"system": system, "description": agent.Description, "mode": "primary", "permissions": deny,
+		permissions := []permission{{Action: "*", Resource: "*", Effect: "deny"}}
+		servers := map[string]any{}
+		serverNames := make([]string, 0, len(snapshot.MCPServers))
+		for name := range snapshot.MCPServers {
+			serverNames = append(serverNames, name)
+		}
+		sort.Strings(serverNames)
+		for _, name := range serverNames {
+			server := snapshot.MCPServers[name]
+			servers[name] = map[string]any{"type": "remote", "url": server.URL, "oauth": false, "codemode": false}
+			tools := append([]string(nil), server.Tools...)
+			sort.Strings(tools)
+			for _, tool := range tools {
+				permissions = append(permissions, permission{Action: mcpAction(name, tool), Resource: "*", Effect: "allow"})
+			}
+		}
+		if len(servers) > 0 {
+			config["mcp"] = map[string]any{"servers": servers}
+		}
+		config["permissions"] = permissions
+		agents := map[string]any{"authored": map[string]any{
+			"system": system, "description": agent.Description, "mode": "primary", "permissions": permissions,
 		}}
+		if len(servers) > 0 {
+			agents["title"] = map[string]any{"disabled": true}
+		}
+		config["agents"] = agents
 		if len(profile.SecretFiles) > 0 {
 			auth := map[string]any{}
 			for provider := range profile.SecretFiles {
@@ -129,4 +156,30 @@ func resolveSecrets(value any, bindings map[string]string, secrets map[string]st
 		}
 	}
 	return value, nil
+}
+
+func rejectLiteralCredentials(value any) error {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, item := range node {
+			normalized := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(key))
+			switch normalized {
+			case "key", "apikey", "token", "accesstoken", "refreshtoken", "password", "secret", "clientsecret", "authorization", "proxyauthorization", "xapikey", "xauthtoken":
+				placeholder, ok := item.(map[string]any)
+				if !ok || len(placeholder) != 1 || placeholder["$secret"] == nil {
+					return fmt.Errorf("literal credential forbidden in profile config: %s", key)
+				}
+			}
+			if err := rejectLiteralCredentials(item); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if err := rejectLiteralCredentials(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

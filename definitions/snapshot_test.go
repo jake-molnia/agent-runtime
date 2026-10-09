@@ -11,9 +11,6 @@ import (
 
 func TestPlainPromptAgent(t *testing.T) {
 	root := fixture(t)
-	if err := os.Remove(filepath.Join(root, "automations/review.yaml")); err != nil {
-		t.Fatal(err)
-	}
 	writeFixture(t, root, "agents/reviewer/agent.yaml", strings.Replace(strings.Replace(agentYAML, "output_schema: output.schema.json\n", "", 1), "[github.diff]", "[]", 1))
 	catalog := loaded(t, root)
 	snapshot, err := catalog.Snapshot("reviewer")

@@ -84,7 +84,7 @@ func TestOpenCodeNativeIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := catalog.Agents["github-reviewer"]
+	agent := catalog.Agents["code-review"]
 	agent.Model = definitions.Model{Provider: "smoke", ID: "json"}
 	catalog.Agents[agent.Name] = agent
 	profile := catalog.Profiles[agent.Execution.Profile]

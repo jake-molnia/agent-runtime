@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -49,6 +50,19 @@ func TestAutomationInspectionAndOfflineExplanation(t *testing.T) {
 	t.Setenv("AGENT_DEFINITIONS_DIR", "../examples/definitions")
 	t.Setenv("AGENT_DEFINITIONS_FILE", "")
 	root := t.TempDir()
+	directory := filepath.Join(root, "github-automations")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile("../examples/github-pr-review.selection.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = bytes.ReplaceAll(manifest, []byte("agent: github-reviewer"), []byte("agent: code-review"))
+	if err := os.WriteFile(filepath.Join(directory, "github-pr-review.yaml"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_AUTOMATIONS_DIR", directory)
 	bindings := filepath.Join(root, "repositories.json")
 	if err := os.WriteFile(bindings, []byte(`{"11":7}`), 0600); err != nil {
 		t.Fatal(err)

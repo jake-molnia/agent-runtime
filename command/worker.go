@@ -13,10 +13,12 @@ import (
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/artifacts"
 	"github.com/jake-molnia/agent-runtime/hatchetbridge"
+	"github.com/jake-molnia/agent-runtime/messages"
 	"github.com/jake-molnia/agent-runtime/orchestration"
 	"github.com/jake-molnia/agent-runtime/sandbox"
 	"github.com/jake-molnia/agent-runtime/tailnet"
 	"github.com/jake-molnia/agent-runtime/telemetry"
+	"github.com/jake-molnia/agent-runtime/workflows"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -28,6 +30,27 @@ func worker(ctx context.Context) error {
 	snapshots := env("AGENT_SNAPSHOT_DIR", "/state/definitions")
 	if err := catalog.Save(snapshots); err != nil {
 		return err
+	}
+	plans, err := workflows.Load(env("AGENT_DEFINITIONS_DIR", "/config"), catalog)
+	if err != nil {
+		return err
+	}
+	automations, err := loadGitHubAutomations(catalog)
+	if err != nil {
+		return err
+	}
+	for name := range automations {
+		if _, collision := plans[name]; collision {
+			return errors.New("workflow and GitHub adapter names collide")
+		}
+	}
+	if len(plans) == 0 && len(automations) == 0 {
+		return errors.New("no workflows configured in workflows/; the worker has no baked-in workflows")
+	}
+	for _, plan := range plans {
+		if err := workflows.Save(snapshots, plan); err != nil {
+			return err
+		}
 	}
 	key, err := os.ReadFile(env("AGENT_SECRET_KEY_FILE", "/secrets/runtime-key"))
 	if err != nil || len(key) < 32 {
@@ -90,16 +113,25 @@ func worker(ctx context.Context) error {
 		return err
 	}
 	defer client.Close(context.Background())
-	workflows, ingress, closeStore, err := registerWorkflows(ctx, client, engine, catalog, snapshots)
+	registered := make([]hatchet.WorkflowBase, 0, len(plans))
+	for _, plan := range plans {
+		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan)
+		if err != nil {
+			return err
+		}
+		registered = append(registered, workflow)
+	}
+	adapters, ingress, closeAdapters, err := registerGitHubWorkflows(ctx, client, engine, catalog, automations, snapshots)
 	if err != nil {
 		return err
 	}
-	defer closeStore()
+	defer closeAdapters()
+	registered = append(registered, adapters...)
 	slots, err := strconv.Atoi(env("AGENT_WORKER_SLOTS", "4"))
 	if err != nil || slots < 1 {
 		return errors.New("invalid worker slots")
 	}
-	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(workflows...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots))
+	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(registered...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots))
 	if err != nil {
 		return err
 	}

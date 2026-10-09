@@ -118,6 +118,19 @@ func TestWorkerRequiresDeploymentOwnership(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(agentDir, "instructions.md"), []byte("Test instructions"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			workflowDir := filepath.Join(dir, "workflows")
+			if err := os.MkdirAll(workflowDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "output.schema.json"), []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte("version: 1\ndescription: Test\nmodel: {provider: openai, id: gpt-5}\nexecution: {profile: default, timeout_seconds: 60}\noutput_schema: output.schema.json\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workflowDir, "example.yaml"), []byte("steps:\n  first:\n    agent: agent\n    input: input\noutput: first\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			keyPath := filepath.Join(dir, "runtime-key")
 			if err := os.WriteFile(filepath.Join(dir, "deployment.yaml"), []byte(profile), 0600); err != nil {
 				t.Fatal(err)

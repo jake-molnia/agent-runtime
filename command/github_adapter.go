@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"slices"
 	"strconv"
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
@@ -31,41 +30,14 @@ func pinnedDefinition(root string, spec hatchetbridge.Spec) (orchestration.Defin
 	return snapshot.Definition()
 }
 
-func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orchestration.Engine, catalog *definitions.Catalog, snapshots string) ([]hatchet.WorkflowBase, map[string]http.Handler, func(), error) {
+func registerGitHubWorkflows(ctx context.Context, client *hatchet.Client, engine *orchestration.Engine, catalog *definitions.Catalog, automations map[string]githubAutomation, snapshots string) ([]hatchet.WorkflowBase, map[string]http.Handler, func(), error) {
 	definition := func(spec hatchetbridge.Spec) (orchestration.Definition, error) {
 		return pinnedDefinition(snapshots, spec)
 	}
-	manual, err := hatchetbridge.Build(client, engine, hatchetbridge.Lifecycle{
-		Name: "agent-run", Definition: definition,
-		Structured: func(spec hatchetbridge.Spec) (bool, error) {
-			snapshot, err := definitions.ReadSnapshot(snapshots, spec.Digest)
-			return len(snapshot.Agent.Schema) > 0, err
-		},
-		Resolve: func(ctx context.Context, input hatchetbridge.Input, runID string) (hatchetbridge.Spec, error) {
-			spec := hatchetbridge.Spec{Agent: input.Agent, Digest: input.Digest, Run: input.Run}
-			if _, err := definition(spec); err != nil {
-				return spec, err
-			}
-			if len(input.Review) != 0 || input.Run.Prompt == "" {
-				return spec, errors.New("manual agent requires a prompt and no review payload")
-			}
-			return spec, nil
-		},
-		Validate: func(spec hatchetbridge.Spec, data json.RawMessage) error {
-			snapshot, err := definitions.ReadSnapshot(snapshots, spec.Digest)
-			if err != nil {
-				return err
-			}
-			return snapshot.ValidateOutput(data)
-		},
-	})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	workflows := []hatchet.WorkflowBase{manual}
+	workflows := []hatchet.WorkflowBase{}
 	ingress := map[string]http.Handler{}
 	closeStore := func() {}
-	if len(catalog.Automations) == 0 {
+	if len(automations) == 0 {
 		return workflows, ingress, closeStore, nil
 	}
 	if engine.Artifacts == nil {
@@ -93,7 +65,7 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 	if err != nil {
 		return nil, nil, nil, errors.New("GitHub webhook secret unavailable")
 	}
-	for name, automation := range catalog.Automations {
+	for name, automation := range automations {
 		handler, err := githubreview.NewHandler(github, store, githubreview.Rule{Automation: name, Selection: automation.Selection})
 		if err != nil {
 			return nil, nil, nil, err
@@ -116,7 +88,7 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 				if err != nil {
 					return spec, err
 				}
-				if len(snapshot.Agent.Schema) == 0 || !slices.Contains(snapshot.Agent.Capabilities, "github.diff") {
+				if len(snapshot.Agent.Schema) == 0 {
 					return spec, errors.New("snapshot is not a structured GitHub review agent")
 				}
 				var review githubreview.Input
@@ -170,7 +142,7 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 			if err != nil {
 				return err
 			}
-			input, err := invocation(catalog, name, data)
+			input, err := githubInvocation(catalog, automations, name, data)
 			if err != nil {
 				return err
 			}

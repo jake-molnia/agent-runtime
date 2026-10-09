@@ -152,13 +152,20 @@ func automationsCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	automations, err := loadGitHubAutomations(catalog)
+	if err != nil {
+		return err
+	}
 	if args[0] == "list" && len(args) == 1 {
-		return json.NewEncoder(os.Stdout).Encode(catalog.Automations)
+		return json.NewEncoder(os.Stdout).Encode(automations)
+	}
+	if args[0] == "validate" && len(args) == 1 {
+		return json.NewEncoder(os.Stdout).Encode(map[string]int{"valid_automations": len(automations)})
 	}
 	if len(args) < 2 {
 		return errors.New("automation name required")
 	}
-	automation, exists := catalog.Automations[args[1]]
+	automation, exists := automations[args[1]]
 	if !exists {
 		return errors.New("unknown automation")
 	}

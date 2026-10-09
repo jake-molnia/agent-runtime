@@ -1,13 +1,21 @@
 # Filesystem catalog reference
 
 `definitions` loads agent behavior and trusted deployment profiles separately.
-All authored model tools are denied. `github.diff` grants the application access
-to a diff that the handler supplies in the task prompt, not a model tool.
+Authored model tools are denied unless an agent selects an approved remote MCP
+connection granted by its profile. `github.diff` remains an application
+capability, not a model tool grant. Definitions do not load workflows.
+
+MCP-enabled native sessions disable auxiliary title generation and explicitly
+await selected connections before prompting. OpenCode 2.0.26 publishes tools after
+a 100 ms debounce; the client applies a bounded 150 ms publication barrier after
+successful connection status. Readiness fails closed on missing/auth-failed brokers.
 
 ## Public API
 
 ```go
 func Load(root string) (*Catalog, error)
+func BuiltinNames() []string
+func Builtin(name string) (Agent, bool)
 func (catalog *Catalog) Resolve(name string) (orchestration.Definition, error)
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error)
 func (catalog *Catalog) Save(root string) error
@@ -17,11 +25,12 @@ func SaveSnapshot(root string, snapshot Snapshot) error
 func ReadSnapshot(root, digest string) (Snapshot, error)
 ```
 
-`Catalog` exposes `Agents map[string]Agent`, `Automations map[string]Automation`,
-and `Profiles map[string]Profile`. `Snapshot` contains `Agent Agent` and
-`Profile Profile`. `Model`, `Execution`, `Trigger`, and `Policy` expose typed
-behavior settings. `Profile.UnmarshalYAML(*yaml.Node) error` supports strict
-decoding of its JSON-compatible `config` field.
+`Catalog` exposes `Agents map[string]Agent`, `Profiles map[string]Profile`,
+`Defaults AgentDefaults`, and `MCPServers map[string]MCPServer`. Legacy automation
+types and registration are removed. Generic graphs live in the `workflows` package.
+`Snapshot` contains the resolved agent, profile, and selected MCP bindings.
+`Profile.UnmarshalYAML(*yaml.Node) error` strictly decodes its JSON-compatible
+`config` field.
 
 ## Source layout
 
@@ -29,20 +38,20 @@ decoding of its JSON-compatible `config` field.
 root/
   deployment.yaml
   agents/<name>/agent.yaml
-  agents/<name>/instructions.md
+  agents/<name>/instructions.md         optional for inherited agents
   agents/<name>/skills/<skill>/SKILL.md   optional
   agents/<name>/output.schema.json      optional
-  automations/<name>.yaml               optional
 ```
 
-Agent YAML requires `version: 1`, `description`, `model: {provider, id}`,
+Standalone agent YAML requires `version: 1`, `description`, `model: {provider, id}`,
 `execution: {profile, timeout_seconds}`, and an optional `capabilities` list.
 Timeouts range from 1 to 86400 seconds. `output_schema` selects a file in that
 agent's directory. It cannot contain path separators. Instructions and skill
 files must contain non-whitespace text. Names contain ASCII letters, digits,
 underscores, or hyphens and start with a letter or digit.
 
-Deployment YAML has `version: 1` and a `profiles` map. Each profile has `pool`,
+Deployment YAML has `version: 1`, a `profiles` map, optional `defaults`, and
+optional `mcp_servers`. Each profile has `pool`,
 `namespace`, an absolute `directory`, optional `tags` and `capabilities` lists,
 optional `secret_files`, and optional `config`. The only supported capability
 is `github.diff`; a profile must grant every capability its agent requests.
@@ -55,18 +64,66 @@ surrounding whitespace, and fails on missing or empty credentials.
 
 Profile `config` accepts only a top-level `providers` object. It cannot supply
 agents, permissions, tools, plugins, MCP servers, or ambient instructions.
-Provider configuration is trusted, non-secret deployment input. Credentials
-belong in `secret_files`, not literal configuration values. Whole-value
+Provider configuration is trusted, non-secret deployment input. Credential
+fields and authentication headers must use secret placeholders, not literal
+values. Credentials belong in `secret_files`. Whole-value
 `{"$secret":"openai"}` placeholders can reference approved provider bindings.
 Unknown bindings fail catalog loading; missing supplied values fail compilation.
 
-Automation YAML requires `version: 1`, an `agent` reference,
-`handler: github.pr-review`, `trigger: {adapter: github.pull_request, actions: [...]}`,
-and `policy: {concurrency: pull-request, limit: 1, deduplication: reviewed-revision}`.
-Actions are `opened`, `synchronize`, and `ready_for_review`; at least one is
-required. Review agents must request `github.diff` and declare an output schema.
-Unknown fields, versions, references, actions, and capabilities are errors.
+An `automations` directory fails loading with a migration error. Workflow
+configuration belongs outside this package. Unknown fields, versions,
+references, and capabilities are errors.
 Symlinks and non-regular files anywhere under the source root are rejected.
+
+## Built-in defaults and overrides
+
+`code-review`, `verify`, and `adversarial-review` have embedded generic Markdown
+instructions and the JSON schema `{}`, which accepts any valid JSON value.
+They contain no model, execution profile, path, tool grants, or workflow pipeline.
+The instructions operate on supplied input and require evidence for conclusions.
+
+When deployment `defaults` is present, the catalog resolves and snapshots all
+three built-ins. Its model and execution fields also supply omitted settings for
+authored agents. Without `defaults`, legacy explicit packages load as before;
+built-ins are not automatically registered. A referenced inherited agent must
+still resolve a model, profile, and valid timeout.
+
+```yaml
+defaults:
+  model: {provider: deployment-provider, id: deployment-model}
+  execution: {profile: approved, timeout_seconds: 120}
+```
+
+`agents/verify/agent.yaml` implicitly inherits `verify`. A custom agent can select
+a built-in with `extends: verify`. Only built-in names are accepted by `extends`.
+Present YAML fields override defaults, including individual model and execution
+fields. An absent `instructions.md` preserves inherited instructions; a present
+file replaces them entirely. `output_schema` replaces the generic schema with
+the named file. Built-in lookups return independent values.
+
+## Remote MCP grants
+
+Deployment owns the approved server URLs and exact native tool lists. Agents
+select connection names with `mcp: [broker]`; their profiles must grant every
+selected connection with the same `mcp` list syntax. Unknown or ungranted
+connections fail loading, including unknown profile grants.
+
+```yaml
+mcp_servers:
+  broker:
+    url: https://broker.example/mcp
+    tools: [read_diff, fetch_issue]
+```
+
+Only `url` and `tools` are accepted. Commands, environment variables, OAuth
+credentials, tokens, passwords, and headers are not supported. URLs reject
+userinfo, queries, and fragments. HTTPS is required except for HTTP with a
+literal loopback IP for tests. Broker authentication belongs to deployment
+network or mTLS configuration. Agent input cannot choose an endpoint.
+
+Native tool names must start with an ASCII letter, digit, or underscore and
+contain only letters, digits, underscores, hyphens, dots, or colons. Wildcard
+names, duplicate tools, and permission-name collisions fail loading.
 
 ## Compilation and output validation
 
@@ -74,8 +131,26 @@ Compilation selects `authored` and maps models to the V2 `providerID` and `id` f
 It combines instructions with skill content in sorted skill-name order.
 OpenCode V2 configuration contains `agents.authored.system`, `mode: primary`,
 and ordered `permissions` arrays at both global and agent scope, each containing
-`{action: "*", resource: "*", effect: "deny"}`. Project configuration is disabled.
+`{action: "*", resource: "*", effect: "deny"}`. Selected MCP tools add exact
+`allow` rules after that deny rule at both scopes. No filesystem, shell, or
+wildcard tool allowance is added. Project configuration is disabled.
 Legacy `agent`, `prompt`, `permission`, and `tools` fields are not emitted.
+
+The compiler targets OpenCode **v2.0.26**, commit
+`9b4ec5714d481559990db0a816d5dec19541a814`, not the V1 configuration format.
+Remote bindings use `mcp.servers.<name>` with `type: remote`, `url`,
+`oauth: false`, and `codemode: false`. OAuth integration enrollment is disabled.
+Only selected servers are emitted. Permissions use `<server>_<native-tool>`,
+replacing tool characters outside `[a-zA-Z0-9_-]` with underscores, and
+`resource: "*"`, exactly as the pinned runtime asserts.
+
+Pinned primary sources:
+
+- [MCP configuration container](https://github.com/anomalyco/opencode/blob/9b4ec5714d481559990db0a816d5dec19541a814/packages/schema/src/config/mcp.ts)
+- [Remote server schema](https://github.com/anomalyco/opencode/blob/9b4ec5714d481559990db0a816d5dec19541a814/packages/schema/src/mcp.ts)
+- [Tool action naming and permission assertion](https://github.com/anomalyco/opencode/blob/9b4ec5714d481559990db0a816d5dec19541a814/packages/core/src/tool/mcp.ts)
+- [Last-matching permission evaluation](https://github.com/anomalyco/opencode/blob/9b4ec5714d481559990db0a816d5dec19541a814/packages/core/src/permission.ts)
+- [OAuth enrollment exclusion](https://github.com/anomalyco/opencode/blob/9b4ec5714d481559990db0a816d5dec19541a814/packages/core/src/mcp/index.ts)
 
 `Definition.Config(secrets)` also returns an `auth` map of approved provider
 credentials as `{type: "api", key: ...}`, as required by the runtime contract.
@@ -100,7 +175,11 @@ same snapshot again succeeds; corrupt existing snapshots are never overwritten.
 
 The SHA-256 digest includes the agent settings, instructions, skill content,
 schema, resolved profile, credential binding paths, and compiler policy version.
-It excludes credential file contents. JSON formatting and object-key ordering
+Selected MCP URLs and tool lists are included; unselected registry entries are
+excluded. MCP snapshots carry an explicit compiler policy marker, and unsupported
+markers cannot replay. Absent new fields use `omitempty` and preserve legacy
+snapshot digests and the previous deny-all compiler policy.
+The digest excludes credential file contents. JSON formatting and object-key ordering
 do not affect it. Credential rotation does not change the digest.
 
 Snapshots copy their maps and slices. Definitions also capture independent

@@ -74,7 +74,6 @@ func fixture(t *testing.T) string {
 	writeFixture(t, root, "agents/reviewer/instructions.md", "Review the diff supplied in the task prompt.")
 	writeFixture(t, root, "agents/reviewer/skills/style/SKILL.md", "Check naming conventions.")
 	writeFixture(t, root, "agents/reviewer/output.schema.json", outputSchema)
-	writeFixture(t, root, "automations/review.yaml", automationYAML)
 	return root
 }
 
@@ -87,48 +86,10 @@ func loaded(t *testing.T, root string) *Catalog {
 	return catalog
 }
 
-func TestFullSelectionYAMLAndDefaultPolicy(t *testing.T) {
-	root := fixture(t)
-	config := `version: 1
-agent: reviewer
-handler: github.pr-review
-trigger:
-  adapter: github.pull_request
-  actions: [opened, synchronize, ready_for_review, labeled]
-selection:
-  repositories:
-    include: [acme/api, acme/web]
-    exclude: [acme/legacy]
-  pull_requests:
-    base_branches: [main, "release/*"]
-    drafts: false
-    labels:
-      require_any: [agent-review]
-      exclude_any: [skip-agent-review]
-    authors:
-      exclude: ["dependabot[bot]", "renovate[bot]"]
-    changed_paths:
-      include: ["src/**", "packages/**"]
-      exclude: ["docs/**", "**/*.md"]
-`
-	writeFixture(t, root, "automations/review.yaml", config)
-	catalog := loaded(t, root)
-	automation := catalog.Automations["review"]
-	if automation.Policy.Limit != 1 || len(automation.Selection.Repositories.Include) != 2 || automation.Selection.PullRequests.Drafts == nil || *automation.Selection.PullRequests.Drafts {
-		t.Fatalf("%+v", automation)
-	}
-	for _, invalid := range []string{strings.Replace(config, "require_any", "required_any", 1), strings.Replace(config, "src/**", "src/[", 1), strings.Replace(config, "labeled", "unsupported", 1)} {
-		writeFixture(t, root, "automations/review.yaml", invalid)
-		if _, err := Load(root); err == nil {
-			t.Fatal("invalid selection accepted")
-		}
-	}
-}
-
 func TestLoadAndCompile(t *testing.T) {
 	root := fixture(t)
 	catalog := loaded(t, root)
-	if len(catalog.Agents) != 1 || len(catalog.Profiles) != 1 || len(catalog.Automations) != 1 {
+	if len(catalog.Agents) != 1 || len(catalog.Profiles) != 1 {
 		t.Fatalf("unexpected catalog: %#v", catalog)
 	}
 	definition, err := catalog.Resolve("reviewer")
@@ -196,19 +157,7 @@ func TestInvalidPackages(t *testing.T) {
 		{"invalid JSON schema", "agents/reviewer/output.schema.json", `{"type":"not-a-type"}`},
 		{"external JSON schema", "agents/reviewer/output.schema.json", `{"$ref":"https://invalid.example/schema"}`},
 		{"file JSON schema", "agents/reviewer/output.schema.json", `{"$ref":"file:///etc/passwd"}`},
-		{"review requires schema", "agents/reviewer/agent.yaml", strings.Replace(agentYAML, "output_schema: output.schema.json\n", "", 1)},
-		{"review requires diff", "agents/reviewer/agent.yaml", strings.Replace(agentYAML, "[github.diff]", "[]", 1)},
-		{"unknown automation field", "automations/review.yaml", automationYAML + "config: {}\n"},
-		{"automation version", "automations/review.yaml", strings.Replace(automationYAML, "version: 1", "version: 2", 1)},
-		{"unknown agent", "automations/review.yaml", strings.Replace(automationYAML, "agent: reviewer", "agent: absent", 1)},
-		{"handler", "automations/review.yaml", strings.Replace(automationYAML, "github.pr-review", "arbitrary", 1)},
-		{"adapter", "automations/review.yaml", strings.Replace(automationYAML, "github.pull_request", "arbitrary", 1)},
-		{"action", "automations/review.yaml", strings.Replace(automationYAML, "opened", "closed", 1)},
-		{"duplicate action", "automations/review.yaml", strings.Replace(automationYAML, "opened, synchronize", "opened, opened", 1)},
-		{"empty actions", "automations/review.yaml", strings.Replace(automationYAML, "[opened, synchronize, ready_for_review]", "[]", 1)},
-		{"limit", "automations/review.yaml", strings.Replace(automationYAML, "limit: 1", "limit: 2", 1)},
-		{"concurrency", "automations/review.yaml", strings.Replace(automationYAML, "pull-request", "global", 1)},
-		{"deduplication", "automations/review.yaml", strings.Replace(automationYAML, "reviewed-revision", "none", 1)},
+		{"automation migration", "automations/review.yaml", automationYAML},
 		{"unknown deployment field", "deployment.yaml", deploymentYAML + "unknown: true\n"},
 		{"deployment version", "deployment.yaml", strings.Replace(deploymentYAML, "version: 1", "version: 2", 1)},
 		{"unknown profile field", "deployment.yaml", strings.Replace(deploymentYAML, "    pool: reviewers", "    pool: reviewers\n    tools: true", 1)},
@@ -240,7 +189,7 @@ func TestProfileCannotOverridePolicy(t *testing.T) {
 }
 
 func TestSymlinks(t *testing.T) {
-	for _, path := range []string{"deployment.yaml", "agents", "agents/reviewer", "agents/reviewer/agent.yaml", "agents/reviewer/instructions.md", "agents/reviewer/skills", "agents/reviewer/skills/style/SKILL.md", "agents/reviewer/output.schema.json", "automations", "automations/review.yaml", "agents/reviewer/unused"} {
+	for _, path := range []string{"deployment.yaml", "agents", "agents/reviewer", "agents/reviewer/agent.yaml", "agents/reviewer/instructions.md", "agents/reviewer/skills", "agents/reviewer/skills/style/SKILL.md", "agents/reviewer/output.schema.json", "automations", "agents/reviewer/unused"} {
 		t.Run(path, func(t *testing.T) {
 			root := fixture(t)
 			full := filepath.Join(root, path)

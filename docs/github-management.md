@@ -59,8 +59,12 @@ configuration fails closed. Automations can only narrow this allowlist.
 
 ## Set per-automation selection
 
-Copy `examples/github-pr-review.selection.yaml` into your authored automation
-directory as `github-pr-review.yaml`. All fields from the proposed selection
+Copy `examples/github-pr-review.selection.yaml` into the separately opt-in
+`github-automations/` directory as `github-pr-review.yaml`, or select its directory
+using `GITHUB_AUTOMATIONS_DIR`. Generic `workflows/` and agent defaults remain
+independent; no GitHub adapter is registered unless explicitly authored. Select
+a structured agent from your external catalog in the manifest; the runtime does
+not ship a production `github-reviewer`. All fields from the proposed selection
 configuration are supported: repository include/exclude, base branches, draft
 eligibility, required/excluded labels, excluded authors, and changed paths.
 
@@ -90,6 +94,7 @@ revision, and policy identity.
 
 ```sh
 agent-runtime agents validate
+agent-runtime automations validate
 agent-runtime automations list
 agent-runtime automations inspect github-pr-review
 agent-runtime automations explain github-pr-review --input facts.json
@@ -125,7 +130,7 @@ go test ./...
 go vet ./...
 ```
 
-Tests cover the complete selection YAML, glob semantics, mixed-path eligibility,
+Tests cover the optional adapter's complete selection YAML, glob semantics, mixed-path eligibility,
 label-trigger actions, canonical metadata, draft opt-in, policy-scoped dedup,
 publication-time changes, enrollment revocation, public discovery, and CLI edits.
 No production Vault or GitHub configuration is modified by those tests.

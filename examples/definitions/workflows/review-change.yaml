@@ -1,0 +1,11 @@
+steps:
+  review:
+    agent: code-review
+    input: input
+  adversarial:
+    agent: adversarial-review
+    input: input
+  verify:
+    agent: verify
+    input: [review, adversarial]
+output: verify
