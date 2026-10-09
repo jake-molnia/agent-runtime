@@ -34,14 +34,30 @@ COPY images/t3/providers.lock.json /opt/providers.lock.json
 COPY images/t3/install-native.py /tmp/install-native.py
 RUN python3 /tmp/install-native.py /opt/providers.lock.json /opt/native
 
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS desktop-tools
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY desktop/download-aio.sh images/t3/install-code-server.sh /tmp/
+RUN sh /tmp/download-aio.sh "${TARGETARCH}" /out \
+    && sh /tmp/install-code-server.sh "${TARGETARCH}" /opt/code-server
+
 FROM node:26.9.0-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bdcd73c103b096988922d7 AS t3-worker
 ARG TARGETARCH
+COPY desktop/install-tools.sh /tmp/install-desktop-tools.sh
 RUN test "$TARGETARCH" = amd64 \
+    && sh /tmp/install-desktop-tools.sh \
+    && rm /tmp/install-desktop-tools.sh \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates git git-lfs openssh-client python3 python3-venv ripgrep tini lsof procps chromium make g++ libffi8 libssl3t64 libbz2-1.0 libuuid1 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --ignore-scripts pnpm@11.10.0 \
     && mkdir -p /workspace && chown node:node /workspace
 COPY --from=runtime-build /out/agent-runtime /out/sandboxd /usr/local/bin/
+COPY --from=desktop-tools /out/aiod /out/computer-use /usr/local/bin/
+COPY --from=desktop-tools /opt/code-server /opt/code-server
+COPY desktop/config/ /usr/local/share/agent-runtime/desktop/
+COPY desktop/skills/ /usr/local/share/agent-runtime/skills/
+COPY desktop/chromium-policy.json /etc/chromium/policies/managed/agent-runtime.json
 COPY --from=runtime-build /usr/local/go /usr/local/go
 COPY --from=worker-package /out/worker /opt/t3
 COPY --from=harnesses /opt/harnesses /opt/harnesses
@@ -52,9 +68,10 @@ COPY --from=harnesses /opt/native/az/usr/bin/az /usr/bin/az
 COPY --from=harnesses /opt/native/extensions /opt/azure/extensions
 COPY --from=harnesses /opt/providers.lock.json /opt/t3/providers.lock.json
 RUN ln -s /opt/opencode2/node_modules/.bin/opencode2 /usr/local/bin/opencode2 \
+    && ln -s /opt/code-server/bin/code-server /usr/local/bin/code-server \
     && ln -s /opt/t3/dist/bin.mjs /usr/local/bin/t3 \
     && chmod +x /opt/t3/dist/bin.mjs
-ENV PATH=/usr/local/go/bin:/opt/harnesses/node_modules/.bin:/opt/native/bin:$PATH \
+ENV PATH=/opt/markitdown/bin:/usr/local/go/bin:/opt/harnesses/node_modules/.bin:/opt/native/bin:$PATH \
     AZURE_EXTENSION_DIR=/opt/azure/extensions AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no AZURE_CORE_COLLECT_TELEMETRY=no \
     T3_WORKSPACE_ROOT=/workspace T3_WORKER_STATE_DIR=/workspace/.t3-worker \
     T3_WORKER_PORT=8083 T3_BROWSER_EXECUTABLE=/usr/bin/chromium \
@@ -64,7 +81,7 @@ ENV PATH=/usr/local/go/bin:/opt/harnesses/node_modules/.bin:/opt/native/bin:$PAT
 COPY --chmod=755 images/t3/entrypoint.sh /usr/local/bin/t3-worker-entrypoint
 COPY --chmod=755 images/t3/git-credential.py /usr/local/bin/t3-git-credential
 COPY --chmod=755 images/t3/configure-git.sh /usr/local/bin/t3-configure-git
-COPY images/t3/verify-image.mjs images/t3/smoke-worker.py images/t3/test_git_credential.py images/t3/git-credential.py images/t3/configure-git.sh /opt/t3/
+COPY images/t3/verify-image.mjs images/t3/smoke-worker.py images/t3/smoke-session.py images/t3/test_git_credential.py images/t3/git-credential.py images/t3/configure-git.sh /opt/t3/
 USER 1000:1000
 WORKDIR /workspace
 RUN mkdir -p "$HOME" "$CODEX_HOME" "$T3_WORKER_STATE_DIR" \

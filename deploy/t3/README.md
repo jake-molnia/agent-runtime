@@ -105,6 +105,36 @@ Expose the central web Service through your existing HTTPS ingress or reverse
 proxy. Preserve WebSocket connections and the application's authentication flow.
 Do not expose the runtime API or worker bearer tokens to browser clients.
 
+## Open the sandbox IDE
+
+The existing T3 **Open in VS Code** action opens the current thread's sandbox IDE
+in a new browser tab. Set `T3CODE_SANDBOX_IDE_ORIGIN` in `web.yaml` to a dedicated
+base origin, for example `https://ide.example.com`. Configure wildcard DNS and
+TLS for `*.ide.example.com` and route those hosts to the central `t3-web` Service,
+preserving WebSocket upgrades. The application assigns each IDE session its own
+subdomain. Do not use the main T3 application origin for sandbox content.
+
+T3 exchanges a short-lived bootstrap ticket for an IDE-only session cookie and
+proxies HTTP and WebSocket requests through the authenticated execution worker.
+The worker selects its loopback code-server service on port 8085. Browser clients
+never receive a worker bearer token or Kubernetes pod address. Sessions are tied
+to the workspace allocation and become invalid after worker replacement.
+
+The worker entrypoint runs `agent-runtime t3-session`, which starts the desktop,
+browser, AIO tools, and code-server before accepting execution traffic on port
+8083. VS Code user data and extensions live under
+`/workspace/.t3-worker/ide` on the retained volume. T3 terminals and IDE terminals
+use the retained worker home and inherit the same display, X authority, and
+session bus. T3's interactive preview attaches to the visible Chromium, and its
+computer-use MCP tools operate on the full desktop through AIO.
+
+The sample profile explicitly sets `SANDBOX_CHROMIUM_SANDBOX=disabled` because
+the restricted container cannot create Chromium's nested sandbox namespaces.
+The Kubernetes sandbox remains the execution isolation boundary. Deployments
+that allow Chromium's own sandbox can set this to `enabled`. The generic sandbox
+image continues to enable it by default. A startup probe gives desktop services
+time to start before the worker is considered ready.
+
 The example runs all containers as UID/GID 1000, drops Linux capabilities, and
 disables automatic Kubernetes API credentials in web and execution pods. The
 runtime ServiceAccount receives only the workspace namespace permissions needed

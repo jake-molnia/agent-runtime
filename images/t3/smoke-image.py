@@ -17,12 +17,13 @@ env.update({
     'T3_WORKSPACE_ID': 'image-smoke', 'T3_ALLOCATION_ID': '1',
     'T3_ALLOCATION_GENERATION': '1', 'T3_POD_UID': 'smoke-pod',
     'T3_WORKER_TOKEN': secrets.token_urlsafe(32),
+    'SANDBOX_CHROMIUM_SANDBOX': 'disabled',
     'AGENT_RUNTIME_URL': 'http://127.0.0.1:9',
     'AGENT_RUNTIME_TOKEN': secrets.token_urlsafe(32),
     'T3_MCP_ADVERTISED_URL': 'http://127.0.0.1:3773/mcp',
 })
 variables = (
-    ['T3_WORKSPACE_ID', 'T3_ALLOCATION_ID', 'T3_ALLOCATION_GENERATION', 'T3_POD_UID', 'T3_WORKER_TOKEN']
+    ['T3_WORKSPACE_ID', 'T3_ALLOCATION_ID', 'T3_ALLOCATION_GENERATION', 'T3_POD_UID', 'T3_WORKER_TOKEN', 'SANDBOX_CHROMIUM_SANDBOX']
     if worker else ['AGENT_RUNTIME_URL', 'AGENT_RUNTIME_TOKEN', 'T3_MCP_ADVERTISED_URL']
 )
 command = [
@@ -43,12 +44,20 @@ with urllib.request.urlopen(request, timeout=2) as response:
 assert identity['workspaceId'] == 'image-smoke'
 assert identity['podUid'] == 'smoke-pod'
 assert identity['protocolVersion'] == 1
+with urllib.request.urlopen('http://127.0.0.1:8085/healthz', timeout=2) as response:
+    assert json.load(response)['status'] in ('alive', 'expired')
+with urllib.request.urlopen('http://127.0.0.1:8085/?folder=/workspace', timeout=3) as response:
+    assert '<html' in response.read().decode().lower()
+with urllib.request.urlopen('http://127.0.0.1:18091/v2/computer/info', timeout=2) as response:
+    assert json.load(response)['data']['available'] is True
+with urllib.request.urlopen('http://127.0.0.1:9222/json/version', timeout=2) as response:
+    assert json.load(response)['webSocketDebuggerUrl'].startswith('ws://127.0.0.1:9222/')
 try:
     urllib.request.urlopen('http://127.0.0.1:8083/v1/identity', timeout=2)
     raise AssertionError('Unauthenticated worker identity was accepted')
 except urllib.error.HTTPError as error:
     assert error.code == 401
-assert not [p for p in Path('/workspace').rglob('*') if p.suffix in ('.sqlite', '.sqlite3', '.db')], 'Worker created a database'
+assert not [p for p in Path('/workspace').rglob('*') if p.name in ('state.sqlite', 'statev2.sqlite')], 'Worker created T3 conversation state'
 ''' if worker else r'''
 import urllib.request
 with urllib.request.urlopen('http://127.0.0.1:3773/', timeout=2) as response:
@@ -56,13 +65,15 @@ with urllib.request.urlopen('http://127.0.0.1:3773/', timeout=2) as response:
 '''
 try:
     subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 180
     while True:
         status = subprocess.run(['docker', 'inspect', '--format', '{{.State.Running}}', name], check=True, capture_output=True, text=True)
         if status.stdout.strip() != 'true':
             raise RuntimeError('Container exited before becoming ready')
         result = subprocess.run(['docker', 'exec', name, 'python3', '-c', probe], capture_output=True, text=True)
         if result.returncode == 0:
+            if worker:
+                subprocess.run(['docker', 'exec', name, 'python3', '/opt/t3/smoke-session.py'], check=True)
             print(f'{args.target} real entrypoint passed with read-only rootfs, UID 1000, no capabilities and no external network.')
             break
         if time.monotonic() >= deadline:

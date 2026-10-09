@@ -18,7 +18,7 @@ import (
 // Run executes the runtime supervisor or Hatchet worker with the caller's shutdown context.
 func Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agent-runtime serve|worker|t3-worker|version|agents|workflows|run|submit|reviews")
+		return errors.New("usage: agent-runtime serve|worker|t3-worker|t3-session|version|agents|workflows|run|submit|reviews")
 	}
 	if args[0] == "reviews" {
 		return reviewsCommand(ctx, args[1:])
@@ -41,6 +41,8 @@ func Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "serve":
 		return serve(ctx)
+	case "t3-session":
+		return t3Session(ctx)
 	case "worker":
 		return worker(ctx)
 	case "t3-worker":
@@ -84,7 +86,7 @@ func serve(ctx context.Context) error {
 	}
 	g.Go(func() error { return child(ctx, "sandboxd", "--root-dir="+root) })
 	desktopReady := make(chan struct{})
-	g.Go(func() error { return runDesktop(ctx, root, desktopReady) })
+	g.Go(func() error { return runDesktop(ctx, root, func([]string) { close(desktopReady) }) })
 	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: os.Getenv("OPENCODE_BINARY"), TailscaleSocket: socket}
 	g.Go(func() error {
 		return httpServer(ctx, ":8081", desktopHandler(ctx, desktopReady, supervisor.Handler(ctx)))

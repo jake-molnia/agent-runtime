@@ -11,6 +11,7 @@ on:
     paths:
       - .github/workflows/t3-images.yml
       - images/t3/**
+      - desktop/**
       - deploy/t3/**
       - go.mod
       - go.sum

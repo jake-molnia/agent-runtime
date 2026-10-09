@@ -30,4 +30,6 @@ for (const [name, spec] of Object.entries(manifest.sourceControl)) {
 }
 probe('Go', 'go', ['version'], manifest.development.go);
 probe('pnpm', 'pnpm', ['--version'], manifest.development.pnpm);
+probe('code-server', 'code-server', ['--version'], '4.141.0');
+probe('AIO', 'aiod', ['version'], '0.9.2');
 console.log(JSON.stringify({ platform: manifest.platform, components: results, authenticated: false }, null, 2));

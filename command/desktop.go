@@ -53,7 +53,11 @@ func desktopHandler(ctx context.Context, ready <-chan struct{}, next http.Handle
 
 // runDesktop owns one display, browser profile, and tool suite for the sandbox's lifetime.
 // Its home is separate from both the checkout and OpenCode's credential directory.
-func runDesktop(ctx context.Context, root string, ready chan<- struct{}) (err error) {
+func runDesktop(ctx context.Context, root string, onReady func([]string)) (err error) {
+	chromiumSandbox := env("SANDBOX_CHROMIUM_SANDBOX", "enabled")
+	if chromiumSandbox != "enabled" && chromiumSandbox != "disabled" {
+		return errors.New("SANDBOX_CHROMIUM_SANDBOX must be enabled or disabled")
+	}
 	state, err := os.MkdirTemp("", "agent-desktop-")
 	if err != nil {
 		return err
@@ -130,7 +134,11 @@ func runDesktop(ctx context.Context, root string, ready chan<- struct{}) (err er
 	if err := waitDesktop(lifetime, "window manager", probeCommand("wmctrl", "-m")); err != nil {
 		return err
 	}
-	start("chromium", "--user-data-dir="+profile, "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=9222", "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--force-renderer-accessibility", "--password-store=basic", "--window-size=1280,800", "about:blank")
+	browserArgs := []string{"--user-data-dir=" + profile, "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=9222", "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--force-renderer-accessibility", "--password-store=basic", "--window-size=1280,800"}
+	if chromiumSandbox == "disabled" {
+		browserArgs = append(browserArgs, "--no-sandbox")
+	}
+	start("chromium", append(browserArgs, "about:blank")...)
 	start("computer-use")
 	start("markitdown-mcp", "--http", "--host", "127.0.0.1", "--port", "8932")
 	start("aiod", "start", "--host", "127.0.0.1", "--port", "18091", "--runtime-dir", filepath.Join(state, "aio"))
@@ -196,7 +204,7 @@ func runDesktop(ctx context.Context, root string, ready chan<- struct{}) (err er
 	}); err != nil {
 		return err
 	}
-	close(ready)
+	onReady(env)
 	<-lifetime.Done()
 	return lifetime.Err()
 }

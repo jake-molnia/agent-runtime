@@ -8,8 +8,9 @@ The sandbox image includes upstream `aiod` and `computer-use` binaries at versio
 `0.9.2`, with architecture-specific checksums verified during the image build.
 Playwright MCP is pinned to `0.0.83`. Document conversion uses
 `markitdown-mcp==0.0.1a7` and `markitdown==0.1.8`.
-The worker image contains no desktop services. VS Code Server and Jupyter are
-not installed or started.
+The generic Hatchet worker image contains no desktop services. The T3 execution
+worker image additionally starts a browser IDE through code-server, as described
+in the [T3 deployment guide](../deploy/t3/README.md). Jupyter is not installed.
 
 The image uses AIO's standalone daemons with our existing non-root Debian image.
 This keeps the upstream tool implementations while giving `agent-runtime` one
