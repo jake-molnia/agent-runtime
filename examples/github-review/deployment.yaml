@@ -1,0 +1,30 @@
+version: 1
+defaults:
+  model: {provider: aperture, id: gpt-6-sol}
+  execution: {profile: review, timeout_seconds: 1800}
+mcp_servers:
+  aperture:
+    url: http://127.0.0.1:8082/v1/mcp
+    tool_policy: broker_catalog
+profiles:
+  review:
+    pool: review-pool
+    namespace: agent-runs
+    directory: /workspace
+    tags: [tag:agent-sandbox, tag:pr-review, tag:pr-review-config]
+    mcp: [aperture]
+    secret_files:
+      aperture: /secrets/aperture-key
+    config:
+      providers:
+        aperture:
+          package: "@opencode/ai/providers/openai-compatible"
+          settings:
+            baseURL: http://127.0.0.1:8082/v1
+          models:
+            gpt-6-sol:
+              settings: {reasoningEffort: medium}
+            gpt-6-luna:
+              settings: {reasoningEffort: high}
+            glm-5.3:
+              settings: {reasoningEffort: medium}

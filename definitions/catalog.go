@@ -27,19 +27,20 @@ type Execution struct {
 }
 
 type Agent struct {
-	Extends      string            `yaml:"extends,omitempty" json:"extends,omitempty"`
-	MCP          []string          `yaml:"mcp,omitempty" json:"mcp,omitempty"`
-	Name         string            `yaml:"-" json:"name"`
-	Digest       string            `yaml:"-" json:"digest"`
-	Version      int               `yaml:"version" json:"version"`
-	Description  string            `yaml:"description" json:"description"`
-	Model        Model             `yaml:"model" json:"model"`
-	Execution    Execution         `yaml:"execution" json:"execution"`
-	Capabilities []string          `yaml:"capabilities" json:"capabilities"`
-	OutputSchema string            `yaml:"output_schema,omitempty" json:"output_schema,omitempty"`
-	Instructions string            `yaml:"-" json:"instructions"`
-	Skills       map[string]string `yaml:"-" json:"skills"`
-	Schema       json.RawMessage   `yaml:"-" json:"schema,omitempty"`
+	BuiltinSkills []string          `yaml:"builtin_skills,omitempty" json:"builtin_skills,omitempty"`
+	Extends       string            `yaml:"extends,omitempty" json:"extends,omitempty"`
+	MCP           []string          `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Name          string            `yaml:"-" json:"name"`
+	Digest        string            `yaml:"-" json:"digest"`
+	Version       int               `yaml:"version" json:"version"`
+	Description   string            `yaml:"description" json:"description"`
+	Model         Model             `yaml:"model" json:"model"`
+	Execution     Execution         `yaml:"execution" json:"execution"`
+	Capabilities  []string          `yaml:"capabilities" json:"capabilities"`
+	OutputSchema  string            `yaml:"output_schema,omitempty" json:"output_schema,omitempty"`
+	Instructions  string            `yaml:"-" json:"instructions"`
+	Skills        map[string]string `yaml:"-" json:"skills"`
+	Schema        json.RawMessage   `yaml:"-" json:"schema,omitempty"`
 }
 
 type Profile struct {
@@ -136,6 +137,9 @@ func Load(root string) (*Catalog, error) {
 		}
 		if err := validateProfile(profile); err != nil {
 			return nil, fmt.Errorf("profile %s: %w", name, err)
+		}
+		if len(profile.Tags) > 0 && !contains(profile.Tags, "tag:agent-sandbox") {
+			return nil, fmt.Errorf("profile %s: tag:agent-sandbox required when tags are configured", name)
 		}
 		for _, server := range profile.MCP {
 			if _, exists := catalog.MCPServers[server]; !exists {

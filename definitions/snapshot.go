@@ -11,19 +11,26 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
+	runtimeapi "github.com/jake-molnia/agent-runtime/runtime"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type Snapshot struct {
-	Agent          Agent                `json:"agent"`
-	Profile        Profile              `json:"profile"`
-	MCPServers     map[string]MCPServer `json:"mcp_servers,omitempty"`
-	CompiledPolicy string               `json:"compiled_policy,omitempty"`
+	SkillBundleDigest string               `json:"skill_bundle_digest,omitempty"`
+	Agent             Agent                `json:"agent"`
+	Profile           Profile              `json:"profile"`
+	MCPServers        map[string]MCPServer `json:"mcp_servers,omitempty"`
+	CompiledPolicy    string               `json:"compiled_policy,omitempty"`
 }
 
 const compiledPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-deny-all:v1"
+const compiledSkillPolicy = "opencode-v2.0.26:authored-primary:trusted-skills-and-mcp:v4"
+
+const compiledBrokerPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-broker-mcp:ready-no-title:v3"
+
 const compiledMCPPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-exact-mcp:ready-no-title:v2"
 
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
@@ -48,6 +55,24 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	}
 	if len(snapshot.MCPServers) > 0 {
 		snapshot.CompiledPolicy = compiledMCPPolicy
+		for _, server := range snapshot.MCPServers {
+			if server.ToolPolicy == "broker_catalog" {
+				snapshot.CompiledPolicy = compiledBrokerPolicy
+			}
+		}
+	}
+	if len(snapshot.Agent.BuiltinSkills) > 0 {
+		snapshot.CompiledPolicy = compiledSkillPolicy
+		bundle, err := runtimeapi.ReadSkillBundle()
+		if err != nil {
+			return Snapshot{}, err
+		}
+		for _, name := range agent.BuiltinSkills {
+			if !contains(bundle.Names, name) {
+				return Snapshot{}, fmt.Errorf("unknown builtin skill: %s", name)
+			}
+		}
+		snapshot.SkillBundleDigest = bundle.Digest
 	}
 	if err := snapshot.validate(); err != nil {
 		return Snapshot{}, fmt.Errorf("agent %s: %w", name, err)
@@ -84,6 +109,9 @@ func (snapshot Snapshot) ValidateOutput(output json.RawMessage) error {
 
 func (snapshot Snapshot) validate() error {
 	agent := snapshot.Agent
+	if err := validateMCPReferences(agent.BuiltinSkills); err != nil {
+		return fmt.Errorf("builtin_skills: %w", err)
+	}
 	if err := validateMCPReferences(agent.MCP); err != nil {
 		return err
 	}
@@ -93,7 +121,26 @@ func (snapshot Snapshot) validate() error {
 	if len(agent.MCP) != len(snapshot.MCPServers) {
 		return errors.New("snapshot must contain only selected MCP bindings")
 	}
-	if len(agent.MCP) > 0 && snapshot.CompiledPolicy != compiledMCPPolicy || len(agent.MCP) == 0 && snapshot.CompiledPolicy != "" {
+	expectedPolicy := ""
+	if len(agent.MCP) > 0 {
+		expectedPolicy = compiledMCPPolicy
+	}
+	for _, server := range snapshot.MCPServers {
+		if server.ToolPolicy == "broker_catalog" {
+			expectedPolicy = compiledBrokerPolicy
+		}
+	}
+	if len(agent.BuiltinSkills) > 0 {
+		digest, err := hex.DecodeString(snapshot.SkillBundleDigest)
+		if err != nil || len(digest) != sha256.Size || strings.ToLower(snapshot.SkillBundleDigest) != snapshot.SkillBundleDigest {
+			return errors.New("builtin skills require a pinned bundle digest")
+		}
+		expectedPolicy = compiledSkillPolicy
+	}
+	if len(agent.BuiltinSkills) == 0 && snapshot.SkillBundleDigest != "" {
+		return errors.New("skill bundle digest without selected skills")
+	}
+	if snapshot.CompiledPolicy != expectedPolicy {
 		return errors.New("unsupported compiled policy")
 	}
 	for _, name := range agent.MCP {
@@ -145,7 +192,16 @@ func (snapshot Snapshot) validate() error {
 	return err
 }
 
+var policyTag = regexp.MustCompile(`^tag:[a-z][a-z0-9-]*$`)
+
 func validateProfile(profile Profile) error {
+	seenTags := map[string]bool{}
+	for _, tag := range profile.Tags {
+		if !policyTag.MatchString(tag) || seenTags[tag] {
+			return fmt.Errorf("invalid or duplicate policy tag: %q", tag)
+		}
+		seenTags[tag] = true
+	}
 	if err := validateMCPReferences(profile.MCP); err != nil {
 		return err
 	}

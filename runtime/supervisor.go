@@ -26,6 +26,7 @@ import (
 )
 
 type Init struct {
+	SkillBundleDigest  string          `json:"skill_bundle_digest,omitempty"`
 	AllowProjectConfig bool            `json:"allow_project_config,omitempty"`
 	RunID              string          `json:"run_id"`
 	Password           string          `json:"password"`
@@ -80,6 +81,18 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 	defer s.mu.Unlock()
 	if input.RunID == "" || len(input.Password) < 32 || !json.Valid(input.Config) {
 		return InitResult{}, errors.New("invalid runtime initialization")
+	}
+	if input.SkillBundleDigest != "" {
+		if input.AllowProjectConfig {
+			return InitResult{}, errors.New("builtin skills require isolated project configuration")
+		}
+		bundle, err := ReadSkillBundle()
+		if err != nil {
+			return InitResult{}, err
+		}
+		if bundle.Digest != input.SkillBundleDigest {
+			return InitResult{}, errors.New("installed skill bundle differs from pinned snapshot")
+		}
 	}
 	stable := input
 	stable.TailnetKey = ""

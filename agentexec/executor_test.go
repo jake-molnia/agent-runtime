@@ -106,7 +106,7 @@ func snapshotFixture(test *testing.T, name string, schema json.RawMessage) defin
 	}
 	catalog := definitions.Catalog{
 		Agents:   map[string]definitions.Agent{name: agent},
-		Profiles: map[string]definitions.Profile{"test": {Pool: "test", Namespace: "test", Directory: "/workspace", Tags: []string{"test"}}},
+		Profiles: map[string]definitions.Profile{"test": {Pool: "test", Namespace: "test", Directory: "/workspace", Tags: []string{"tag:agent-sandbox"}}},
 	}
 	snapshot, err := catalog.Snapshot(name)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestStagePinsSnapshotAndContracts(test *testing.T) {
 	stage.Outputs[0].Schema = "changed"
 	backend.inspect = func(definition orchestration.Definition) {
 		config, err := definition.Config(nil)
-		if err != nil || strings.Contains(string(config), "changed") || definition.Tags[0] != "test" {
+		if err != nil || strings.Contains(string(config), "changed") || definition.Tags[0] != "tag:agent-sandbox" {
 			test.Fatalf("snapshot not pinned: %s %v", config, err)
 		}
 		var compiled map[string]json.RawMessage
