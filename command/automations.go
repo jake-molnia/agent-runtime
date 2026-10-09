@@ -2,12 +2,16 @@ package command
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/definitions"
@@ -67,7 +71,7 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 	if engine.Artifacts == nil {
 		return nil, nil, nil, errors.New("automations require AGENT_ARTIFACT_DIR")
 	}
-	github, err := githubConnection(ctx)
+	github, allowed, err := githubClient()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -85,9 +89,13 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 			closeStore()
 		}
 	}()
-	handler, err := githubreview.NewHandler(github.Client, store)
+	handler, err := githubreview.NewHandler(github, store)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	secret, err := os.ReadFile(env("GITHUB_WEBHOOK_SECRET_FILE", "/secrets/github-webhook"))
+	if err != nil {
+		return nil, nil, nil, errors.New("GitHub webhook secret unavailable")
 	}
 	for name, automation := range catalog.Automations {
 		workflow, err := hatchetbridge.Build(client, engine, hatchetbridge.Lifecycle{
@@ -153,7 +161,7 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 			return nil, nil, nil, err
 		}
 		workflows = append(workflows, workflow)
-		webhook, err := githubreview.NewWebhookHandler(githubreview.WebhookConfig{Secret: github.WebhookSecret, Actions: automation.Trigger.Actions, Allowed: github.Allowed, Submit: func(ctx context.Context, review githubreview.Input) error {
+		webhook, err := githubreview.NewWebhookHandler(githubreview.WebhookConfig{Secret: secret, Actions: automation.Trigger.Actions, Allowed: allowed, Submit: func(ctx context.Context, review githubreview.Input) error {
 			data, err := json.Marshal(review)
 			if err != nil {
 				return err
@@ -172,6 +180,45 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 	}
 	ok = true
 	return workflows, ingress, closeStore, nil
+}
+
+func githubClient() (*githubreview.Client, map[int64]int64, error) {
+	appID, err := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
+	if err != nil {
+		return nil, nil, errors.New("invalid GITHUB_APP_ID")
+	}
+	data, err := os.ReadFile(env("GITHUB_APP_KEY_FILE", "/secrets/github-app.pem"))
+	if err != nil {
+		return nil, nil, errors.New("GitHub App key unavailable")
+	}
+	block, rest := pem.Decode(data)
+	if block == nil || len(rest) != 0 {
+		return nil, nil, errors.New("invalid GitHub App PEM key")
+	}
+	var key *rsa.PrivateKey
+	if parsed, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		key = parsed
+	} else {
+		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, nil, errors.New("invalid GitHub App key")
+		}
+		var ok bool
+		key, ok = parsed.(*rsa.PrivateKey)
+		if !ok {
+			return nil, nil, errors.New("GitHub App key must be RSA")
+		}
+	}
+	data, err = os.ReadFile(env("GITHUB_REPOSITORIES_FILE", "/config/github-repositories.json"))
+	if err != nil {
+		return nil, nil, errors.New("GitHub repository allowlist unavailable")
+	}
+	var allowed map[int64]int64
+	if err := strictJSON(data, &allowed); err != nil {
+		return nil, nil, errors.New("invalid GitHub repository allowlist")
+	}
+	client, err := githubreview.NewClient(githubreview.ClientConfig{AppID: appID, PrivateKey: key, Allowed: allowed})
+	return client, allowed, err
 }
 
 func resolvedReview(spec hatchetbridge.Spec) (githubreview.Resolved, error) {
