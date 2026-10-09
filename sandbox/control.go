@@ -221,6 +221,10 @@ func ready(obj *unstructured.Unstructured) (bool, error) {
 			continue
 		}
 		if condition["status"] == "True" {
+			observed, found, _ := unstructured.NestedInt64(condition, "observedGeneration")
+			if (found && observed != obj.GetGeneration()) || (!found && obj.GetGeneration() > 0) {
+				continue
+			}
 			return true, nil
 		}
 		switch condition["reason"] {
@@ -231,7 +235,11 @@ func ready(obj *unstructured.Unstructured) (bool, error) {
 	return false, nil
 }
 func waitReady(ctx context.Context, api dynamic.ResourceInterface, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	uid := obj.GetUID()
 	for {
+		if obj.GetUID() != uid {
+			return nil, errors.New("sandbox resource replaced")
+		}
 		if ok, err := ready(obj); ok || err != nil {
 			return obj, err
 		}

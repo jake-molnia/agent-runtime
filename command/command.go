@@ -18,13 +18,15 @@ import (
 // Run executes the runtime supervisor or Hatchet worker with the caller's shutdown context.
 func Run(ctx context.Context, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: agent-runtime serve|worker|version")
+		return errors.New("usage: agent-runtime serve|worker|t3-worker|version")
 	}
 	switch args[0] {
 	case "serve":
 		return serve(ctx)
 	case "worker":
 		return worker(ctx)
+	case "t3-worker":
+		return t3Worker(ctx)
 	case "version":
 		fmt.Println("agent-runtime; upstream OpenCode V2; sandboxd v1.0.3")
 		return nil
