@@ -31,8 +31,14 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, attempted := range []string{"publish_comment", "dangerous_tool"} {
+	for _, attempted := range []string{"publish_comment", "dangerous_tool", "screenshot"} {
 		t.Run(attempted, func(t *testing.T) {
+			approved := "publish_comment"
+			if attempted == "screenshot" {
+				approved = attempted
+			}
+			const screenshotPNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGOQtYz5D8IMMAYAN2QGxaTMsjUAAAAASUVORK5CYII="
+			const screenshotText = "desktop screenshot transport marker"
 			listener, err := net.Listen("tcp", "127.0.0.1:4096")
 			if err != nil {
 				t.Fatal(err)
@@ -42,6 +48,7 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			methods, calls := map[string]int{}, map[string]int{}
 			var advertised [][]string
 			unusedRequests := 0
+			imageReachedProvider, imageTextReachedProvider := false, false
 			broker := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.Method != "POST" {
 					writer.WriteHeader(405)
@@ -75,12 +82,18 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 					result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "fake-broker", "version": "1"}}
 				case "tools/list":
 					tools := []any{}
-					for _, name := range []string{"publish_comment", "dangerous_tool"} {
+					for _, name := range []string{"publish_comment", "dangerous_tool", "screenshot"} {
 						tools = append(tools, map[string]any{"name": name, "description": name, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}})
 					}
 					result = map[string]any{"tools": tools}
 				case "tools/call":
 					result = map[string]any{"content": []any{map[string]string{"type": "text", "text": "broker called"}}}
+					if rpc.Params.Name == "screenshot" {
+						result = map[string]any{"content": []any{
+							map[string]string{"type": "text", "text": screenshotText},
+							map[string]string{"type": "image", "mimeType": "image/png", "data": screenshotPNG},
+						}}
+					}
 				default:
 					t.Errorf("unexpected MCP method %s", rpc.Method)
 					result = map[string]any{}
@@ -101,6 +114,9 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			provider := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, 1<<20))
 				var payload struct {
+					Messages []struct {
+						Content json.RawMessage `json:"content"`
+					} `json:"messages"`
 					Tools []struct {
 						Function struct {
 							Name string `json:"name"`
@@ -124,6 +140,30 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 				mutex.Lock()
 				advertised = append(advertised, names)
 				first := len(advertised) == 1
+				if attempted == "screenshot" && !first {
+					for _, message := range payload.Messages {
+						var plain string
+						if json.Unmarshal(message.Content, &plain) == nil {
+							imageTextReachedProvider = imageTextReachedProvider || strings.Contains(plain, screenshotText)
+							continue
+						}
+						var parts []struct {
+							Type     string `json:"type"`
+							Text     string `json:"text"`
+							ImageURL struct {
+								URL string `json:"url"`
+							} `json:"image_url"`
+						}
+						if err := json.Unmarshal(message.Content, &parts); err != nil {
+							t.Errorf("invalid provider message content: %s", message.Content)
+							continue
+						}
+						for _, part := range parts {
+							imageReachedProvider = imageReachedProvider || part.Type == "image_url" && part.ImageURL.URL == "data:image/png;base64,"+screenshotPNG
+							imageTextReachedProvider = imageTextReachedProvider || part.Type == "text" && strings.Contains(part.Text, screenshotText)
+						}
+					}
+				}
 				mutex.Unlock()
 				writer.Header().Set("Content-Type", "text/event-stream")
 				delta := map[string]any{"role": "assistant"}
@@ -159,7 +199,7 @@ defaults:
 mcp_servers:
   broker:
     url: %q
-    tools: [publish_comment]
+    tools: [%s]
   unused:
     url: %q
     tools: [dangerous_tool]
@@ -178,9 +218,9 @@ profiles:
           settings: {baseURL: %q}
           models:
             json:
-              capabilities: {tools: true, input: [text], output: [text]}
+              capabilities: {tools: true, input: [text, image], output: [text]}
               limit: {context: 32000, output: 2048}
-`, broker.URL, unused.URL, workspace, secretFile, provider.URL+"/v1")
+`, broker.URL, approved, unused.URL, workspace, secretFile, provider.URL+"/v1")
 			if err := os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(fixture), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -255,15 +295,23 @@ profiles:
 					t.Error("provider never contacted")
 				}
 				for _, names := range advertised {
-					if len(names) != 1 || names[0] != "broker_publish_comment" {
+					if len(names) != 1 || names[0] != "broker_"+approved {
 						t.Errorf("live model tool allowlist violated: %v", names)
 					}
 				}
 				if calls["dangerous_tool"] != 0 {
 					t.Error("unapproved tool executed")
 				}
-				if attempted == "publish_comment" && calls["publish_comment"] != 1 {
+				if attempted == approved && calls[approved] != 1 {
 					t.Error("approved tool did not execute exactly once")
+				}
+				if attempted == "screenshot" {
+					if !imageReachedProvider {
+						t.Error("MCP PNG image did not reach the model as an image_url data URI")
+					}
+					if !imageTextReachedProvider {
+						t.Error("MCP screenshot text did not reach the model alongside its image")
+					}
 				}
 			})
 			if _, err := supervisor.Initialize(ctx, runtimeapi.Init{RunID: run.Key, Password: engine.Password(run.Key), Config: config}); err != nil {

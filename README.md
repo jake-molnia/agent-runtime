@@ -46,6 +46,7 @@ The CLI enqueues the configured workflow and returns its Hatchet run ID. The res
 task returns the selected output value and its immutable message reference.
 
 Read [setup and ownership](docs/agent-automations.md),
-[defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).
+[defaults and overrides](definitions/README.md), [workflow semantics](workflows/README.md),
+and [sandbox desktop and tools](docs/desktop.md).
 GitHub remains an optional adapter library; no GitHub identity, workflow or secret
 configuration is required to use the runtime.
