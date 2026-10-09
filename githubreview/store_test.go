@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,7 +95,7 @@ func TestPostgresDurabilityAndCrossConnectionDedup(t *testing.T) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		first.WithLock(cleanup, prKey(input), func(store LockedStore) error {
-			_, err := store.(*pgLockedStore).conn.Exec(cleanup, "DELETE FROM githubreview_records WHERE review_key=$1", resolved.Key)
+			_, err := store.(*pgLockedStore).conn.Exec(cleanup, "DELETE FROM githubreview_records WHERE review_key=$1 OR review_key LIKE $2", resolved.Key, resolved.Key+"/part/%")
 			return err
 		})
 	})
@@ -133,7 +134,7 @@ func TestPostgresDurabilityAndCrossConnectionDedup(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if !found || record.Status != "completed" || record.ReviewID != 42 || record.Owner != "hatchet-run" {
+		if !found || record.Status != "completed" || record.ReviewID != 42 || record.Owner != "hatchet-run" || len(record.Requests) != 1 || !strings.Contains(record.Requests[0].Body, completionMarker(resolved.Key)) {
 			t.Errorf("record not durable: %+v, found %v", record, found)
 		}
 		return nil
@@ -162,7 +163,7 @@ func TestPostgresPublishingIntentSurvivesCallbackFailure(t *testing.T) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		first.WithLock(cleanup, prKey(input), func(store LockedStore) error {
-			_, err := store.(*pgLockedStore).conn.Exec(cleanup, "DELETE FROM githubreview_records WHERE review_key=$1", resolved.Key)
+			_, err := store.(*pgLockedStore).conn.Exec(cleanup, "DELETE FROM githubreview_records WHERE review_key=$1 OR review_key LIKE $2", resolved.Key, resolved.Key+"/part/%")
 			return err
 		})
 	})
@@ -177,7 +178,7 @@ func TestPostgresPublishingIntentSurvivesCallbackFailure(t *testing.T) {
 	}
 	defer second.Close()
 	if err = second.WithLock(ctx, prKey(input), func(store LockedStore) error {
-		record, found, err := store.Load(ctx, resolved.Key)
+		record, found, err := store.Load(ctx, resolved.Key+"/part/0")
 		if err == nil && (!found || record.Status != "publishing") {
 			t.Errorf("publication intent lost: %+v", record)
 		}

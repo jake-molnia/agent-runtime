@@ -123,8 +123,8 @@ func (client *Client) request(ctx context.Context, method, endpoint, token strin
 		}
 		return errors.New("GitHub request outcome uncertain")
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
-	if err != nil || len(raw) > 4<<20 {
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<20+1))
+	if err != nil || len(raw) > 64<<20 {
 		return errors.New("invalid or oversized GitHub response")
 	}
 	if err = json.Unmarshal(raw, output); err != nil {
@@ -136,18 +136,24 @@ func (client *Client) token(ctx context.Context, input Input, write bool) (strin
 	if err := client.authorize(input); err != nil {
 		return "", err
 	}
-	jwt, err := client.jwt()
-	if err != nil {
-		return "", err
-	}
 	permission := "read"
 	if write {
 		permission = "write"
 	}
+	return client.scopedToken(ctx, input, map[string]string{"pull_requests": permission})
+}
+func (client *Client) scopedToken(ctx context.Context, input Input, permissions map[string]string) (string, error) {
+	if err := client.authorize(input); err != nil {
+		return "", err
+	}
+	jwt, err := client.jwt()
+	if err != nil {
+		return "", err
+	}
 	body := struct {
 		RepositoryIDs []int64           `json:"repository_ids"`
 		Permissions   map[string]string `json:"permissions"`
-	}{[]int64{input.RepositoryID}, map[string]string{"pull_requests": permission}}
+	}{[]int64{input.RepositoryID}, permissions}
 	var response struct {
 		Token string `json:"token"`
 	}
@@ -229,7 +235,7 @@ func (client *Client) Files(ctx context.Context, input Input) ([]File, error) {
 	}
 	var files []File
 	total := 0
-	for page := 1; page <= MaxFiles/100+1; page++ {
+	for page := 1; page <= MaxFiles/100; page++ {
 		var batch []File
 		if err = client.request(ctx, http.MethodGet, pullPath(input)+fmt.Sprintf("/files?per_page=100&page=%d", page), token, nil, &batch); err != nil {
 			return nil, err
@@ -241,14 +247,14 @@ func (client *Client) Files(ctx context.Context, input Input) ([]File, error) {
 			total += len(file.Path) + len(file.Patch)
 		}
 		files = append(files, batch...)
-		if len(files) > MaxFiles || total > MaxDiffBytes {
+		if total > MaxDiffBytes {
 			return nil, errors.New("pull request diff exceeds bounds")
 		}
 		if len(batch) < 100 {
 			return files, nil
 		}
 	}
-	return nil, errors.New("pull request files pagination exceeds bounds")
+	return files, nil
 }
 func (client *Client) Reviews(ctx context.Context, input Input) ([]Review, error) {
 	if err := client.authorize(input); err != nil {
@@ -295,7 +301,7 @@ func (client *Client) Reviews(ctx context.Context, input Input) ([]Review, error
 			}
 		}
 		if len(batch) < 100 {
-			return reviews, nil
+			return client.legacyComments(ctx, input, token, reviews)
 		}
 	}
 	return nil, errors.New("GitHub reviews pagination exceeds bounds")
@@ -321,3 +327,39 @@ type notPublishedError struct{ cause error }
 
 func (err *notPublishedError) Error() string { return err.cause.Error() }
 func (err *notPublishedError) Unwrap() error { return err.cause }
+
+func (client *Client) legacyComments(ctx context.Context, input Input, token string, reviews []Review) ([]Review, error) {
+	for page := 1; page <= 100; page++ {
+		var batch []struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+			App  *struct {
+				ID int64 `json:"id"`
+			} `json:"performed_via_github_app"`
+		}
+		if err := client.request(ctx, http.MethodGet, repoPath(input)+fmt.Sprintf("/issues/%d/comments?per_page=100&page=%d", input.Number, page), token, nil, &batch); err != nil {
+			return nil, err
+		}
+		if len(batch) > 100 {
+			return nil, errors.New("invalid GitHub comments page")
+		}
+		for _, comment := range batch {
+			if comment.App != nil && comment.App.ID == client.appID && hasHeaderMarker(comment.Body, legacyMarker) && hasHeaderMarker(comment.Body, "<!-- head:"+input.HeadSHA+" -->") {
+				reviews = append(reviews, Review{ID: comment.ID, Body: comment.Body, CommitID: input.HeadSHA})
+			}
+		}
+		if len(batch) < 100 {
+			return reviews, nil
+		}
+	}
+	return nil, errors.New("GitHub comments pagination exceeds bounds")
+}
+
+// CheckoutToken grants read-only repository contents access after verifying the canonical identity.
+// The caller must keep this short-lived token out of workflow inputs and persisted artifacts.
+func (client *Client) CheckoutToken(ctx context.Context, input Input) (string, error) {
+	if _, err := client.Canonical(ctx, input); err != nil {
+		return "", err
+	}
+	return client.scopedToken(ctx, input, map[string]string{"contents": "read"})
+}
