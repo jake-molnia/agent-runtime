@@ -59,28 +59,28 @@ func serve(ctx context.Context) error {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
-	state, err := os.MkdirTemp("", "agent-tailnet-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(state)
-	socket := filepath.Join(state, "tailscaled.sock")
 	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return child(ctx, "sandboxd", "--root-dir="+root) })
-	desktopReady := make(chan struct{})
-	g.Go(func() error { return runDesktop(ctx, root, desktopReady) })
-	tailnetEnabled := os.Getenv("APERTURE_UPSTREAM") != ""
-	if tailnetEnabled {
-		g.Go(func() error {
-			return child(ctx, "tailscaled", "--tun=userspace-networking", "--state=mem:", "--statedir="+state, "--socket="+socket, "--socks5-server=127.0.0.1:1055", "--no-logs-no-support")
-		})
-		handler, err := runtimeapi.ApertureProxy(os.Getenv("APERTURE_UPSTREAM"))
+	var socket string
+	if upstream := os.Getenv("APERTURE_UPSTREAM"); upstream != "" {
+		handler, err := runtimeapi.ApertureProxy(upstream)
 		if err != nil {
 			return err
 		}
+		state, err := os.MkdirTemp("", "agent-tailnet-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(state)
+		socket = filepath.Join(state, "tailscaled.sock")
+		g.Go(func() error {
+			return child(ctx, "tailscaled", "--tun=userspace-networking", "--state=mem:", "--statedir="+state, "--socket="+socket, "--socks5-server=127.0.0.1:1055", "--no-logs-no-support")
+		})
 		g.Go(func() error { return httpServer(ctx, "127.0.0.1:8082", handler) })
 	}
-	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: env("OPENCODE_BINARY", "opencode2"), TailscaleSocket: socket}
+	g.Go(func() error { return child(ctx, "sandboxd", "--root-dir="+root) })
+	desktopReady := make(chan struct{})
+	g.Go(func() error { return runDesktop(ctx, root, desktopReady) })
+	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: os.Getenv("OPENCODE_BINARY"), TailscaleSocket: socket}
 	g.Go(func() error {
 		return httpServer(ctx, ":8081", desktopHandler(ctx, desktopReady, supervisor.Handler(ctx)))
 	})
@@ -89,17 +89,22 @@ func serve(ctx context.Context) error {
 func httpServer(ctx context.Context, addr string, handler http.Handler) error {
 	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan struct{})
-	defer close(done)
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		select {
 		case <-ctx.Done():
 			stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = server.Shutdown(stop)
+			if err := server.Shutdown(stop); err != nil {
+				_ = server.Close()
+			}
 		case <-done:
 		}
 	}()
 	err := server.ListenAndServe()
+	close(done)
+	<-stopped
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

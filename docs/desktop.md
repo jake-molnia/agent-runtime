@@ -133,7 +133,7 @@ MCP integration test additionally verifies that PNG image content reaches a loca
 mock model endpoint through the real harness:
 
 ```sh
-AGENT_RUNTIME_TEST_OPENCODE_BINARY=/path/to/opencode2 \
+AGENT_RUNTIME_TEST_OPENCODE_BINARY=/path/to/opencode \
   go test ./command -run '^TestOpenCodeNativeMCPIntegration' -count=1
 ```
 
