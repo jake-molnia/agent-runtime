@@ -1,0 +1,14 @@
+version: 1
+# To run every morning, explicitly add schedule as shown in ../recurring.
+input:
+  brief: >-
+    Explore the past day's developer tools, AI, hardware, and security news.
+    Pick four to six worthwhile stories, read original sources, and write a short,
+    lively briefing with accessible explanations and source links. Check previous
+    coverage to avoid repetition. Fewer stories are fine on a quiet day.
+notebook: true
+steps:
+  write:
+    agent: daily-brief
+    input: input
+output: write

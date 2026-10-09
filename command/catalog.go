@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/google/uuid"
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/definitions"
 	"github.com/jake-molnia/agent-runtime/hatchetbridge"
@@ -99,24 +100,29 @@ func strictJSON(data []byte, target any) error {
 
 func runCommand(ctx context.Context, args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: agent-runtime run WORKFLOW --input FILE")
+		return errors.New("usage: agent-runtime run WORKFLOW [--input FILE] [--wait] [--text]")
 	}
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	path := flags.String("input", "", "JSON input file")
+	wait := flags.Bool("wait", false, "wait for the result")
+	text := flags.Bool("text", false, "print result report as text; requires --wait")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
-	if *path == "" || flags.NArg() != 0 {
-		return errors.New("run requires --input FILE")
+	if flags.NArg() != 0 || (*text && !*wait) {
+		return errors.New("unexpected arguments or --text without --wait")
 	}
-	file, err := os.Open(*path)
-	if err != nil {
-		return errors.New("input file unavailable")
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 1<<20+1))
-	if err != nil {
-		return errors.New("input file unavailable")
+	var data json.RawMessage
+	if *path != "" {
+		file, err := os.Open(*path)
+		if err != nil {
+			return errors.New("input file unavailable")
+		}
+		defer file.Close()
+		data, err = io.ReadAll(io.LimitReader(file, 1<<20+1))
+		if err != nil {
+			return errors.New("input file unavailable")
+		}
 	}
 	catalog, err := loadCatalog()
 	if err != nil {
@@ -139,6 +145,13 @@ func runCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *wait {
+		id, err := uuid.Parse(ref.RunId)
+		if err != nil {
+			return errors.New("server returned invalid run ID")
+		}
+		return printRunResult(ctx, client.Runs(), id, true, *text, os.Stdout)
+	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]string{"run_id": ref.RunId, "workflow": args[0]})
 }
 
@@ -147,8 +160,9 @@ func invocation(plans map[string]workflows.Snapshot, workflow string, data []byt
 	if !exists {
 		return hatchetbridge.ConfiguredInput{}, errors.New("unknown configured workflow")
 	}
-	if len(data) > 1<<20 || !json.Valid(data) {
-		return hatchetbridge.ConfiguredInput{}, errors.New("bounded JSON input required")
+	value, err := plan.Workflow.InvocationInput(data)
+	if err != nil {
+		return hatchetbridge.ConfiguredInput{}, err
 	}
-	return hatchetbridge.ConfiguredInput{Digest: plan.Digest, Input: append(json.RawMessage(nil), data...)}, nil
+	return hatchetbridge.ConfiguredInput{Digest: plan.Digest, Input: value}, nil
 }

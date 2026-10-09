@@ -1,0 +1,4 @@
+execution:
+  profile: maintenance
+  timeout_seconds: 3600
+mcp: [repository]

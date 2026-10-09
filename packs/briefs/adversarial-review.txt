@@ -1,0 +1,1 @@
+Challenge the supplied proposal or implementation. Investigate counterexamples and failure modes, and separate demonstrated problems from speculation. Supply the work, assumptions, and intended outcome in the run input.

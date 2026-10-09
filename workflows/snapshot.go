@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jake-molnia/agent-runtime/definitions"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 const CompilerPolicy = "workflow-v1:whole-json:scalar-or-ordered-array:all-steps-contribute:max32:input1MiB"
+const recurringPolicy = "workflow-v2:whole-json:scheduled-input:single-step-notebook:v1"
 
 type Snapshot struct {
 	Workflow Workflow                        `json:"workflow"`
@@ -85,16 +87,63 @@ func (snapshot Snapshot) validate() error {
 		if len(agent.Agent.Schema) == 0 {
 			return fmt.Errorf("step %s: agent requires output schema", name)
 		}
+		if snapshot.Workflow.Notebook {
+			if err := validateNotebookContract(agent.Agent.Schema); err != nil {
+				return fmt.Errorf("step %s: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateNotebookContract(raw json.RawMessage) error {
+	invalid := errors.New("notebook output contract requires a direct object schema with required status and notebook, a string notebook, and a nonempty status enum containing only completed, no_change, or blocked; references and schema composition are unsupported")
+	var schema struct {
+		Type       string                     `json:"type"`
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(raw, &schema) != nil || schema.Type != "object" || !slices.Contains(schema.Required, "status") || !slices.Contains(schema.Required, "notebook") {
+		return invalid
+	}
+	var notebook struct {
+		Type string `json:"type"`
+	}
+	var status struct {
+		Enum []string `json:"enum"`
+	}
+	if json.Unmarshal(schema.Properties["notebook"], &notebook) != nil || notebook.Type != "string" || json.Unmarshal(schema.Properties["status"], &status) != nil || len(status.Enum) == 0 {
+		return invalid
+	}
+	for _, value := range status.Enum {
+		if value != "completed" && value != "no_change" && value != "blocked" {
+			return invalid
+		}
+	}
+	for _, node := range []json.RawMessage{raw, schema.Properties["status"], schema.Properties["notebook"]} {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(node, &fields) != nil {
+			return invalid
+		}
+		for _, keyword := range []string{"$ref", "$dynamicRef", "$recursiveRef", "allOf", "anyOf", "oneOf"} {
+			if _, exists := fields[keyword]; exists {
+				return invalid
+			}
+		}
 	}
 	return nil
 }
 
 func (snapshot Snapshot) digest() (string, error) {
 	snapshot.Digest = ""
+	policy := CompilerPolicy
+	if snapshot.Workflow.Schedule != nil || snapshot.Workflow.DefaultInput != nil || snapshot.Workflow.Notebook {
+		policy = recurringPolicy
+	}
 	data, err := json.Marshal(struct {
 		Policy   string   `json:"policy"`
 		Snapshot Snapshot `json:"snapshot"`
-	}{CompilerPolicy, snapshot})
+	}{policy, snapshot})
 	if err != nil {
 		return "", err
 	}

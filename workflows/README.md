@@ -2,13 +2,14 @@
 
 `Load(root, catalog)` reads optional `root/workflows/<name>.yaml` manifests.
 The filename supplies the workflow name. An absent directory returns an empty
-map. The runtime does not supply workflows.
+map. `workflows init PRESET NAME` creates an editable starter; nothing is registered
+until the worker loads your selected workflow files.
 
 ```yaml
 steps:
   review: {agent: code-review, input: input}
   adversarial: {agent: adversarial-review, input: input}
-  verify: {agent: verify, input: [review, adversarial]}
+  verify: {agent: verify, input: [input, review, adversarial]}
 output: verify
 ```
 
@@ -50,3 +51,43 @@ their original agent settings after a deployment changes the catalog.
 directory but does not return them as authored workflows. Other stray files or
 subdirectories are rejected. Keep credentials outside these manifests and
 snapshots; execution resolves public secret-file bindings separately.
+
+## Default input, cron, and notebooks
+
+`input` at the workflow root supplies default task data. `run NAME --input FILE`
+overrides it; without an override, `run NAME` uses that default. Explicit `null`
+is a valid default and differs from an omitted input.
+
+An optional `schedule: {cron: "0 8 * * *", timezone: Europe/London}` adds a Hatchet
+cron trigger. Expressions have five fields; timezone defaults to UTC. The cron
+input pins the complete workflow digest and default input. The agent/model/brief
+used by a submitted run cannot silently change when source files change. Local
+parser tests cover timezone transitions; actual timing is provided by Hatchet.
+
+`notebook: true` is supported for one-step workflows. Its agent must explicitly
+require a string `notebook` and a supported `status` enum in a direct object output
+schema. The runtime provides initial input as `{"task": <input>, "notebook": "..."}`.
+The agent returns full replacement notes with its report. Builtin notes are capped
+at 16,384 Unicode characters, and storage enforces 64 KiB of UTF-8.
+
+Notebook workers require a stable `AGENT_DEPLOYMENT_ID`. State is isolated by that
+ID and workflow name under `AGENT_NOTEBOOK_DIR`, default `/state/notebooks`.
+All workers for one deployment must use the same shared directory and ID. Use
+different deployment IDs for independent owners; these are trusted operator
+settings, not end-user authorization.
+
+Hatchet limits a notebook workflow to one active run and cancels overlapping new
+runs. Resolve pins the previous notes per run. Successful validated outputs commit
+a new immutable notebook revision; blocked outputs preserve the previous text.
+Failed executions do not update notes. Replay returns the original revision and
+cannot regress newer notes. Filesystem locking and revision checks protect commits.
+This needs a shared POSIX filesystem supporting flock, hard links, and fsync.
+
+`no_change` is a result disposition for consumers, not an automatic notification.
+The runtime exposes reports through Hatchet and `runs result`; sending to another
+channel requires a configured tool or external consumer. Output persistence does
+not guarantee exactly-once external actions.
+
+Remove cron schedules through Hatchet when retiring a workflow. Removing its YAML
+alone does not establish that existing server-side schedules have been deleted.
+Keep compatible workers and snapshots for runs that are already queued.

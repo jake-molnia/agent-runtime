@@ -1,0 +1,1 @@
+Investigate which developments in developer tools are useful for a small software team this month. Explore beyond starting links, inspect original sources, compare practical tradeoffs, and produce a concise sourced answer. Keep useful sources and unanswered questions for next time. Replace the question, audience, freshness requirement, and effort budget with your own preferences.

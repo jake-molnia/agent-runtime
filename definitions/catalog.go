@@ -27,6 +27,7 @@ type Execution struct {
 }
 
 type Agent struct {
+	Tools        []string          `yaml:"tools,omitempty" json:"tools,omitempty"`
 	Extends      string            `yaml:"extends,omitempty" json:"extends,omitempty"`
 	MCP          []string          `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	Name         string            `yaml:"-" json:"name"`
@@ -43,6 +44,7 @@ type Agent struct {
 }
 
 type Profile struct {
+	Tools        []string          `yaml:"tools,omitempty" json:"tools,omitempty"`
 	MCP          []string          `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	Pool         string            `yaml:"pool" json:"pool"`
 	Namespace    string            `yaml:"namespace" json:"namespace"`

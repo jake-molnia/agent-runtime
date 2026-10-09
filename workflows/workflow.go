@@ -22,10 +22,13 @@ const MaxInputBytes = 1 << 20
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 type Workflow struct {
-	Name    string          `json:"name" yaml:"-"`
-	Version int             `json:"version" yaml:"version,omitempty"`
-	Steps   map[string]Step `json:"steps" yaml:"steps"`
-	Output  string          `json:"output" yaml:"output"`
+	Schedule     *Schedule       `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	DefaultInput json.RawMessage `json:"input,omitempty" yaml:"-"`
+	Notebook     bool            `json:"notebook,omitempty" yaml:"notebook,omitempty"`
+	Name         string          `json:"name" yaml:"-"`
+	Version      int             `json:"version" yaml:"version,omitempty"`
+	Steps        map[string]Step `json:"steps" yaml:"steps"`
+	Output       string          `json:"output" yaml:"output"`
 }
 
 type Step struct {
@@ -87,6 +90,9 @@ func (refs InputRefs) validate() error {
 }
 
 func (workflow Workflow) order() ([]string, error) {
+	if err := workflow.validateRecurring(); err != nil {
+		return nil, err
+	}
 	if !validName.MatchString(workflow.Name) {
 		return nil, errors.New("invalid workflow name")
 	}

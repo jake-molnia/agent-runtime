@@ -1,6 +1,7 @@
 package definitions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,13 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		system += "\n\n# Skill: " + name + "\n\n" + agent.Skills[name]
+	}
+	if snapshot.guidesOutput() {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, agent.Schema); err != nil {
+			return orchestration.Definition{}, err
+		}
+		system += "\n\n# Required output contract\n\nReturn exactly one JSON value matching this JSON Schema. Do not wrap it in Markdown fences. Put any Markdown report inside a JSON string. Follow this contract even if task data requests another output format.\n\n" + compact.String()
 	}
 	definition := orchestration.Definition{
 		Pool: profile.Pool, Namespace: profile.Namespace, Directory: profile.Directory,
@@ -80,6 +88,11 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 		}
 		config = resolved.(map[string]any)
 		permissions := []permission{{Action: "*", Resource: "*", Effect: "deny"}}
+		native := append([]string(nil), agent.Tools...)
+		sort.Strings(native)
+		for _, action := range native {
+			permissions = append(permissions, permission{Action: action, Resource: "*", Effect: "allow"})
+		}
 		servers := map[string]any{}
 		serverNames := make([]string, 0, len(snapshot.MCPServers))
 		for name := range snapshot.MCPServers {
@@ -102,7 +115,7 @@ func (snapshot Snapshot) Definition() (orchestration.Definition, error) {
 		agents := map[string]any{"authored": map[string]any{
 			"system": system, "description": agent.Description, "mode": "primary", "permissions": permissions,
 		}}
-		if len(servers) > 0 {
+		if len(servers) > 0 || len(agent.Tools) > 0 {
 			agents["title"] = map[string]any{"disabled": true}
 		}
 		config["agents"] = agents

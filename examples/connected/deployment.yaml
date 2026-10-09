@@ -1,0 +1,27 @@
+version: 1
+defaults:
+  model: {provider: openai, id: gpt-5}
+  execution: {profile: web, timeout_seconds: 900}
+profiles:
+  web:
+    pool: agent-pool
+    namespace: agents
+    directory: /workspace
+    secret_files:
+      openai: /secrets/openai-key
+    mcp: [web]
+  maintenance:
+    pool: agent-pool
+    namespace: agents
+    directory: /workspace
+    secret_files:
+      openai: /secrets/openai-key
+    mcp: [repository]
+mcp_servers:
+  # These URLs and tool names are placeholders. Configure your actual MCP service.
+  web:
+    url: https://web-tools.example.invalid/mcp
+    tools: [search, browse]
+  repository:
+    url: https://repository-tools.example.invalid/mcp
+    tools: [read_repository, isolated_checkout, git, run_checks]

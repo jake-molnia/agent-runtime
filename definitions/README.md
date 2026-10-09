@@ -1,8 +1,8 @@
 # Filesystem catalog reference
 
 `definitions` loads agent behavior and trusted deployment profiles separately.
-Authored model tools are denied unless an agent selects an approved remote MCP
-connection granted by its profile. `github.diff` remains an application
+Authored model tools are denied unless an agent selects native tool actions or
+remote MCP connections explicitly granted by its profile. `github.diff` remains an application
 capability, not a model tool grant. Definitions do not load workflows.
 
 MCP-enabled native sessions disable auxiliary title generation and explicitly
@@ -83,7 +83,7 @@ They contain no model, execution profile, path, tool grants, or workflow pipelin
 The instructions operate on supplied input and require evidence for conclusions.
 
 When deployment `defaults` is present, the catalog resolves and snapshots all
-three built-ins. Its model and execution fields also supply omitted settings for
+16 built-ins. Its model and execution fields also supply omitted settings for
 authored agents. Without `defaults`, legacy explicit packages load as before;
 built-ins are not automatically registered. A referenced inherited agent must
 still resolve a model, profile, and valid timeout.
@@ -100,6 +100,29 @@ Present YAML fields override defaults, including individual model and execution
 fields. An absent `instructions.md` preserves inherited instructions; a present
 file replaces them entirely. `output_schema` replaces the generic schema with
 the named file. Built-in lookups return independent values.
+
+Thirteen additional presets return a structured result with `status`, `report`,
+`sources`, and `notebook`. Their descriptions and contracts are in the
+[preset guide](../docs/presets.md). All presets remain free of model choices and
+tool grants. `BuiltinNames()` is the authoritative catalog.
+
+## Native tool grants
+
+Both the agent and its deployment profile may declare `tools` containing exact
+permission actions: `read`, `glob`, `grep`, `edit`, `shell`, and `webfetch`.
+The profile must grant every action selected by the agent. Lists replace inherited
+lists. Unknown actions, duplicates, and wildcards are rejected.
+
+`edit` grants the pinned runtime's edit, write, and patch operations together.
+`shell` grants broad command execution inside the sandbox, including file and
+network access; it is not a per-command allowlist. Explicit native reads can
+encounter subordinate project instructions such as `AGENTS.md`. No preset gets
+these actions automatically. `external_directory` remains denied for native
+operations that enforce that permission; shell authority is broader.
+
+Native `webfetch` reads URLs. Search and interactive browser tools can use approved
+remote MCP services. Native `websearch` is not selectable because the pinned
+runtime requires additional search-provider integration setup.
 
 ## Remote MCP grants
 
@@ -132,8 +155,8 @@ It combines instructions with skill content in sorted skill-name order.
 OpenCode V2 configuration contains `agents.authored.system`, `mode: primary`,
 and ordered `permissions` arrays at both global and agent scope, each containing
 `{action: "*", resource: "*", effect: "deny"}`. Selected MCP tools add exact
-`allow` rules after that deny rule at both scopes. No filesystem, shell, or
-wildcard tool allowance is added. Project configuration is disabled.
+`allow` rules after that deny rule at both scopes. Only selected, profile-granted native actions add native tool allowances.
+No wildcard action allowance is added. Project configuration is disabled.
 Legacy `agent`, `prompt`, `permission`, and `tools` fields are not emitted.
 
 The compiler targets OpenCode **v2.0.26**, commit
@@ -164,6 +187,11 @@ present in the module dependencies. Invalid schemas fail loading. Local schema
 references are supported; external resources cannot be fetched.
 `Snapshot.ValidateOutput` checks the stored digest, parses exactly one JSON
 value, and validates it against the compiled schema. It fails if no schema exists.
+
+New schema-bearing snapshots include an explicit output-contract compiler policy.
+The compiler supplies the actual schema in the model's system instructions and
+requires standalone JSON. Legacy policy markers replay their original behavior.
+Native grants use separate policy markers and are pinned with the snapshot.
 
 ## Snapshot storage
 

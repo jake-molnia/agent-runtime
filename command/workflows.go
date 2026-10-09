@@ -7,12 +7,33 @@ import (
 	"os"
 	"slices"
 
+	"github.com/jake-molnia/agent-runtime/packs"
 	"github.com/jake-molnia/agent-runtime/workflows"
 )
 
 func workflowsCommand(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agent-runtime workflows list|validate|inspect NAME")
+		return errors.New("usage: agent-runtime workflows list|validate|inspect NAME|templates|init PRESET NAME")
+	}
+	if args[0] == "templates" {
+		if len(args) != 1 {
+			return errors.New("templates takes no arguments")
+		}
+		for _, name := range packs.Names() {
+			fmt.Println(name)
+		}
+		return nil
+	}
+	if args[0] == "init" {
+		if len(args) != 3 {
+			return errors.New("init requires a preset and workflow name")
+		}
+		path, err := packs.Write(env("AGENT_DEFINITIONS_DIR", "/config"), args[1], args[2])
+		if err != nil {
+			return err
+		}
+		fmt.Println(path)
+		return nil
 	}
 	catalog, err := loadCatalog()
 	if err != nil {

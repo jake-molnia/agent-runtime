@@ -25,6 +25,8 @@ type Snapshot struct {
 
 const compiledPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-deny-all:v1"
 const compiledMCPPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-exact-mcp:ready-no-title:v2"
+const compiledSchemaPolicy = "opencode-v2.0.26:authored-primary:deny-all:output-contract:v3"
+const compiledMCPSchemaPolicy = "opencode-v2.0.26:authored-primary:exact-mcp:ready-no-title:output-contract:v3"
 
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	agent, exists := catalog.Agents[name]
@@ -48,6 +50,15 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	}
 	if len(snapshot.MCPServers) > 0 {
 		snapshot.CompiledPolicy = compiledMCPPolicy
+	}
+	if len(agent.Schema) > 0 {
+		snapshot.CompiledPolicy = compiledSchemaPolicy
+		if len(snapshot.MCPServers) > 0 {
+			snapshot.CompiledPolicy = compiledMCPSchemaPolicy
+		}
+	}
+	if len(agent.Tools) > 0 {
+		snapshot.CompiledPolicy = snapshot.nativePolicy()
 	}
 	if err := snapshot.validate(); err != nil {
 		return Snapshot{}, fmt.Errorf("agent %s: %w", name, err)
@@ -84,6 +95,14 @@ func (snapshot Snapshot) ValidateOutput(output json.RawMessage) error {
 
 func (snapshot Snapshot) validate() error {
 	agent := snapshot.Agent
+	if err := validateNativeTools(agent.Tools); err != nil {
+		return err
+	}
+	for _, action := range agent.Tools {
+		if !contains(snapshot.Profile.Tools, action) {
+			return fmt.Errorf("profile does not grant native tool action: %s", action)
+		}
+	}
 	if err := validateMCPReferences(agent.MCP); err != nil {
 		return err
 	}
@@ -93,7 +112,11 @@ func (snapshot Snapshot) validate() error {
 	if len(agent.MCP) != len(snapshot.MCPServers) {
 		return errors.New("snapshot must contain only selected MCP bindings")
 	}
-	if len(agent.MCP) > 0 && snapshot.CompiledPolicy != compiledMCPPolicy || len(agent.MCP) == 0 && snapshot.CompiledPolicy != "" {
+	if len(agent.Tools) > 0 {
+		if snapshot.CompiledPolicy != snapshot.nativePolicy() {
+			return errors.New("unsupported compiled policy")
+		}
+	} else if len(agent.MCP) > 0 && snapshot.CompiledPolicy != compiledMCPPolicy && snapshot.CompiledPolicy != compiledMCPSchemaPolicy || len(agent.MCP) == 0 && snapshot.CompiledPolicy != "" && snapshot.CompiledPolicy != compiledSchemaPolicy {
 		return errors.New("unsupported compiled policy")
 	}
 	for _, name := range agent.MCP {
@@ -146,6 +169,9 @@ func (snapshot Snapshot) validate() error {
 }
 
 func validateProfile(profile Profile) error {
+	if err := validateNativeTools(profile.Tools); err != nil {
+		return err
+	}
 	if err := validateMCPReferences(profile.MCP); err != nil {
 		return err
 	}

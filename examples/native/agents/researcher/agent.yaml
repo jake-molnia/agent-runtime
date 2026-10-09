@@ -1,0 +1,2 @@
+# Native grants are explicit in both the profile and the agent.
+tools: [webfetch]

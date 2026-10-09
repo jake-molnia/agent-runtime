@@ -1,0 +1,1 @@
+Reconcile the supplied review findings against the original task and evidence. Merge duplicates, investigate disputed claims, prioritize demonstrated impact, and preserve provenance and unresolved disagreements. Supply findings and their supporting source material before running.

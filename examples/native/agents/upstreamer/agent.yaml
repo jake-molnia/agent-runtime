@@ -1,0 +1,4 @@
+execution:
+  profile: maintenance
+  timeout_seconds: 3600
+tools: [read, glob, grep, edit, shell, webfetch]

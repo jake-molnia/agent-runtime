@@ -9,6 +9,7 @@ import (
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/agentexec"
 	"github.com/jake-molnia/agent-runtime/messages"
+	"github.com/jake-molnia/agent-runtime/notebooks"
 	"github.com/jake-molnia/agent-runtime/workflows"
 )
 
@@ -23,9 +24,10 @@ type ConfiguredState struct {
 }
 
 type ConfiguredResult struct {
-	Digest  string             `json:"digest"`
-	Message messages.Reference `json:"message"`
-	Value   json.RawMessage    `json:"value,omitempty"`
+	Digest           string             `json:"digest"`
+	Message          messages.Reference `json:"message"`
+	Value            json.RawMessage    `json:"value,omitempty"`
+	NotebookRevision uint64             `json:"notebook_revision,omitempty"`
 }
 
 func configuredService(plan workflows.Snapshot, executor *agentexec.Executor, store messages.Store) (*messages.Service, error) {
@@ -47,18 +49,37 @@ func configuredService(plan workflows.Snapshot, executor *agentexec.Executor, st
 			return nil, err
 		}
 		seen[actor] = true
+		if plan.Workflow.Notebook {
+			validateAgent := validator
+			validator = func(value json.RawMessage) error {
+				if err := validateAgent(value); err != nil {
+					return err
+				}
+				return notebooks.ValidateOutput(value)
+			}
+		}
 		validators[snapshot.Agent.Digest] = validator
 		stages = append(stages, stage)
 	}
 	return messages.New(store, validators, stages, 0)
 }
 
-func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot) (*hatchet.Workflow, error) {
+func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot, notebookStores ...notebooks.Directory) (*hatchet.Workflow, error) {
 	if client == nil || store == nil || root == "" {
 		return nil, errors.New("configured workflow dependencies required")
 	}
 	if err := current.Verify(); err != nil {
 		return nil, err
+	}
+	if len(notebookStores) > 1 {
+		return nil, errors.New("only one notebook store is supported")
+	}
+	var notebookStore notebooks.Directory
+	if len(notebookStores) == 1 {
+		notebookStore = notebookStores[0]
+	}
+	if current.Workflow.Notebook && notebookStore.Root == "" {
+		return nil, errors.New("notebook workflows require durable notebook storage")
 	}
 	executor, err := agentexec.New(backend)
 	if err != nil {
@@ -82,7 +103,19 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		}
 		return plan, nil
 	}
-	workflow := client.NewWorkflow(name, hatchet.WithWorkflowVersion(current.Digest))
+	options := []hatchet.WorkflowOption{hatchet.WithWorkflowVersion(current.Digest)}
+	if current.Workflow.Schedule != nil {
+		expression, err := current.Workflow.Schedule.Expression()
+		if err != nil {
+			return nil, err
+		}
+		options = append(options, hatchet.WithWorkflowCron(expression), hatchet.WithWorkflowCronInput(ConfiguredInput{Digest: current.Digest, Input: current.Workflow.DefaultInput}))
+	}
+	if current.Workflow.Notebook {
+		limit, strategy := int32(1), hatchet.CancelNewest
+		options = append(options, hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: `"` + name + `"`, MaxRuns: &limit, LimitStrategy: &strategy}))
+	}
+	workflow := client.NewWorkflow(name, options...)
 	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
 		plan, err := load(input.Digest)
 		if err != nil {
@@ -91,11 +124,28 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		if !json.Valid(input.Input) || len(input.Input) > 1<<20 {
 			return ConfiguredState{}, errors.New("bounded JSON workflow input required")
 		}
+		value := input.Input
+		if plan.Workflow.Notebook {
+			if notebookStore.Root == "" {
+				return ConfiguredState{}, errors.New("pinned workflow requires notebook storage")
+			}
+			session, err := notebookStore.Begin(ctx.GetContext(), name, ctx.WorkflowRunId(), plan.Digest, value)
+			if err != nil {
+				return ConfiguredState{}, err
+			}
+			value, err = json.Marshal(struct {
+				Task     json.RawMessage `json:"task"`
+				Notebook string          `json:"notebook"`
+			}{session.Input, session.Notebook})
+			if err != nil || len(value) > workflows.MaxInputBytes {
+				return ConfiguredState{}, errors.New("task and notebook exceed workflow input limit")
+			}
+		}
 		service, err := configuredService(plan, executor, store)
 		if err != nil {
 			return ConfiguredState{}, err
 		}
-		ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: input.Input}}})
+		ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
 		return ConfiguredState{Digest: input.Digest, Input: ref}, err
 	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
 	tasks := map[string]*hatchet.Task{}
@@ -191,6 +241,11 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			return result, err
 		}
 		result.Value, err = configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), name, state, plan, plan.Workflow.Output, result.Message)
+		if err == nil && plan.Workflow.Notebook {
+			var record notebooks.Record
+			record, err = notebookStore.Commit(ctx.GetContext(), name, ctx.WorkflowRunId(), plan.Digest, result.Value)
+			result.NotebookRevision = record.Revision
+		}
 		return result, err
 	}, hatchet.WithParents(resolve, tasks[current.Workflow.Output]), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
 	return workflow, nil

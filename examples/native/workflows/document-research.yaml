@@ -1,0 +1,14 @@
+version: 1
+input:
+  brief: >-
+    Research how a Go HTTP service can implement graceful shutdown. Start with
+    https://pkg.go.dev/net/http and https://pkg.go.dev/os/signal, follow relevant
+    documentation links, and explain the shutdown sequence, cancellation behavior,
+    and common limitations. Produce a concise sourced implementation guide.
+    Native webfetch reads URLs; it does not provide a search engine or browser.
+notebook: true
+steps:
+  investigate:
+    agent: researcher
+    input: input
+output: investigate

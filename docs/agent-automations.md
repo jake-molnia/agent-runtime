@@ -23,13 +23,14 @@ profiles:
 ```
 
 These are example deployment choices, not runtime defaults. Choose your provider,
-model, pool, namespace and credential binding. Built-in agents have generic
-instructions and accept arbitrary JSON input without fixed result keys; their
-default output schema accepts any valid JSON. They do not contain model choices,
-GitHub behavior or publishing authority.
+model, pool, namespace and credential binding. Agents accept JSON task input.
+The original three accept any JSON result; the additional presets use the
+structured result contract described in [the preset guide](presets.md). Presets
+contain no model choices, credentials, or tool grants. Repository maintenance
+instructions use the task and deployment policies supplied to them.
 
-When `defaults` is configured, the catalog resolves `code-review`, `verify`, and
-`adversarial-review`. You need no agent files to use them. Explicit standalone
+When `defaults` is configured, the catalog resolves all 16 builtins, including
+`code-review`, `verify`, and `adversarial-review`. You need no agent files to use them. Explicit standalone
 agent packages remain supported without deployment defaults.
 
 ## Override an agent
@@ -80,9 +81,10 @@ connections enter the native session configuration. URLs reject credentials,
 query strings and fragments. HTTPS is required except literal-loopback HTTP for
 local testing. Arbitrary local subprocess MCP servers are not supported.
 
-The pinned native config preserves deny-all and grants only exact approved MCP
-actions. Filesystem, shell, arbitrary execute, unapproved tools and interactive
-OAuth enrollment remain unavailable. OpenCode initializes and manages the remote
+The pinned native config starts with deny-all and grants exact approved MCP
+actions plus native actions explicitly selected by the agent and granted by its
+profile. Native `tools` supports read, glob, grep, edit, shell, and webfetch.
+Interactive OAuth enrollment remains unavailable. OpenCode initializes and manages the remote
 MCP connections within each isolated session; deleting the sandbox terminates them.
 Use deployment-managed network identity/TLS for the approved broker. This format
 does not put bearer tokens or private keys into workflow snapshots.
@@ -107,7 +109,7 @@ steps:
     input: input
   verify:
     agent: verify
-    input: [review, adversarial]
+    input: [input, review, adversarial]
 output: verify
 ```
 
@@ -139,6 +141,8 @@ Set these variables in your deployment:
 | `AGENT_DEFINITIONS_DIR` | Trusted source directory, default `/config` |
 | `AGENT_SNAPSHOT_DIR` | Shared durable agent/workflow snapshots, default `/state/definitions` |
 | `AGENT_MESSAGE_DIR` | Shared immutable messages, default `/state/messages` |
+| `AGENT_NOTEBOOK_DIR` | Shared notebook revisions, default `/state/notebooks` |
+| `AGENT_DEPLOYMENT_ID` | Stable notebook namespace, required for notebook workflows and tailnet ownership |
 | `AGENT_ARTIFACT_DIR` | Native session exports, required for structured agents |
 | `AGENT_SECRET_KEY_FILE` | Stable runtime key, default `/secrets/runtime-key`, at least 32 bytes |
 | `AGENT_WORKER_NAME` | Hatchet worker name, default `agent-runtime` |
@@ -219,3 +223,16 @@ These checks do not deploy your config repo, Hatchet server, Kubernetes pools, M
 brokers, TLS/network identity or secret retrieval. Validate those separately in
 staging with your actual credentials. See `definitions/README.md` for pinned native
 MCP source evidence and `workflows/README.md` for storage/identity details.
+
+## Preset and recurring-agent configuration
+
+See [the preset guide](presets.md) for installable starters, opt-in native and MCP
+tools, cron configuration, notebook contracts, and result commands. `run NAME`
+accepts a configured default input; `--wait --text` waits for a readable report.
+`runs inspect|result|cancel RUN_ID` manages an existing run. Notebook workflows
+require `AGENT_DEPLOYMENT_ID` and share state only within that namespace.
+
+Current examples live in `examples/native`, `examples/connected`, and
+`examples/recurring`. The latter has an enabled example cron and is registered only
+when you explicitly choose that directory. Credentials, pools, and remote tool
+endpoints remain deployment settings.

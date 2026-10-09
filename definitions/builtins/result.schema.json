@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "report", "sources", "notebook"],
+  "properties": {
+    "status": {"type": "string", "enum": ["completed", "no_change", "blocked"]},
+    "report": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "title"],
+        "properties": {
+          "url": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "notebook": {"type": "string", "maxLength": 16384}
+  }
+}

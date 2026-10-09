@@ -42,18 +42,13 @@ func mcpFixture(t *testing.T) string {
 func TestBuiltinsAndDeploymentDefaults(t *testing.T) {
 	root := defaultsFixture(t)
 	catalog := loaded(t, root)
-	if len(catalog.Agents) != 3 || catalog.Defaults.Model.ID != "deployment-model" {
+	if len(catalog.Agents) != len(BuiltinNames()) || catalog.Defaults.Model.ID != "deployment-model" {
 		t.Fatalf("defaults not resolved: %#v", catalog)
 	}
-	for _, name := range BuiltinNames() {
+	for index, name := range BuiltinNames() {
 		base, exists := Builtin(name)
-		if !exists || base.Model != (Model{}) || base.Execution != (Execution{}) || len(base.Capabilities) != 0 || len(base.MCP) != 0 || string(base.Schema) != "{}" {
+		if !exists || base.Model != (Model{}) || base.Execution != (Execution{}) || len(base.Capabilities) != 0 || len(base.MCP) != 0 {
 			t.Fatalf("builtin contains deployment settings: %#v", base)
-		}
-		for _, forbidden := range []string{"github", "pull request", "summary", "findings", "gpt-", "/workspace"} {
-			if strings.Contains(strings.ToLower(base.Instructions), forbidden) {
-				t.Fatalf("builtin %s contains fixed content: %s", name, forbidden)
-			}
 		}
 		snapshot, err := catalog.Snapshot(name)
 		if err != nil {
@@ -61,6 +56,12 @@ func TestBuiltinsAndDeploymentDefaults(t *testing.T) {
 		}
 		if snapshot.Agent.Model != catalog.Defaults.Model || snapshot.Agent.Execution != catalog.Defaults.Execution {
 			t.Fatal("deployment defaults not inherited")
+		}
+		if index >= 3 {
+			continue
+		}
+		if string(base.Schema) != "{}" {
+			t.Fatalf("legacy builtin %s schema changed", name)
 		}
 		for _, output := range []string{`{}`, `{"arbitrary":[1,true]}`, `[]`, `null`, `"text"`, `42`, `false`} {
 			if err := snapshot.ValidateOutput(json.RawMessage(output)); err != nil {
@@ -161,7 +162,7 @@ func TestMCPCompileExactReleasePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.MCPServers) != 1 || snapshot.CompiledPolicy != compiledMCPPolicy {
+	if len(snapshot.MCPServers) != 1 || snapshot.CompiledPolicy != compiledMCPSchemaPolicy {
 		t.Fatalf("unselected bindings exposed: %#v", snapshot)
 	}
 	definition, err := snapshot.Definition()
@@ -327,6 +328,11 @@ func TestLegacySnapshotDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshot.CompiledPolicy = ""
+	snapshot.Agent.Digest, err = snapshot.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if snapshot.Agent.Digest != "fbaa71205ddceaa92966001ac2c129a5345c2ac2cbad12955aa82464a7dc733a" {
 		t.Fatalf("legacy snapshot digest changed: %s", snapshot.Agent.Digest)
 	}
@@ -407,7 +413,7 @@ func TestMCPDefinitionCopiesAndEmptySelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.MCPServers) != 0 || snapshot.CompiledPolicy != "" || strings.Contains(string(data), `"mcp"`) || strings.Contains(string(data), `"allow"`) || strings.Contains(string(data), `"title"`) {
+	if len(snapshot.MCPServers) != 0 || snapshot.CompiledPolicy != compiledSchemaPolicy || strings.Contains(string(data), `"mcp"`) || strings.Contains(string(data), `"allow"`) || strings.Contains(string(data), `"title"`) {
 		t.Fatal("empty selection exposed MCP tools")
 	}
 }

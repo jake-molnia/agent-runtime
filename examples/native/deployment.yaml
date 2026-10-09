@@ -1,0 +1,21 @@
+version: 1
+# Deployment values and provider credentials must match your running infrastructure.
+defaults:
+  model: {provider: openai, id: gpt-5}
+  execution: {profile: reading, timeout_seconds: 900}
+profiles:
+  reading:
+    pool: agent-pool
+    namespace: agents
+    directory: /workspace
+    secret_files:
+      openai: /secrets/openai-key
+    tools: [webfetch]
+  maintenance:
+    pool: agent-pool
+    namespace: agents
+    directory: /workspace
+    secret_files:
+      openai: /secrets/openai-key
+    # Shell permits broad sandbox process, filesystem, and network access.
+    tools: [read, glob, grep, edit, shell, webfetch]
