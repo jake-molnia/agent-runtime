@@ -2,7 +2,6 @@
 bin
 *.test
 .env
-
 **/node_modules
 docs/research
 .env.*
