@@ -14,7 +14,7 @@ func RegisterT3(client *hatchet.Client, controller *lifecycle.Controller) *hatch
 		key = "'" + controller.PoolID + ":' + " + key
 	}
 	one := int32(1)
-	strategy := hatchet.QueueNewest
+	strategy := hatchet.GroupRoundRobin
 	workflow := client.NewWorkflow(t3Name("t3-workspace-lifecycle", controller.PoolID), hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: "input.workspaceId", MaxRuns: &one, LimitStrategy: &strategy, Name: t3Name("t3-workspace", controller.PoolID), IsTenantScoped: true}), hatchet.WithWorkflowIdempotency(hatchet.IdempotencyConfig{Expression: key, TTL: 24 * time.Hour, Method: hatchet.IdempotencyMethodStatus}))
 	workflow.NewTask("transition", func(ctx hatchet.Context, r lifecycle.Request) (lifecycle.State, error) {
 		bounded, cancel := context.WithTimeout(ctx.GetContext(), 4*time.Minute)
