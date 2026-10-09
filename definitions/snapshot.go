@@ -26,12 +26,7 @@ type Snapshot struct {
 	CompiledPolicy    string               `json:"compiled_policy,omitempty"`
 }
 
-const compiledPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-deny-all:v1"
-const compiledSkillPolicy = "opencode-v2.0.26:authored-primary:trusted-skills-and-mcp:v4"
-
-const compiledBrokerPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-broker-mcp:ready-no-title:v3"
-
-const compiledMCPPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-exact-mcp:ready-no-title:v2"
+const compiledPolicy = "opencode-v2.0.26:authored-primary:sandbox-unrestricted:schema-system:v5"
 
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	agent, exists := catalog.Agents[name]
@@ -42,7 +37,7 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	if !exists {
 		return Snapshot{}, fmt.Errorf("agent %s: unknown profile: %s", name, agent.Execution.Profile)
 	}
-	snapshot := Snapshot{Agent: agent, Profile: profile}
+	snapshot := Snapshot{Agent: agent, Profile: profile, CompiledPolicy: compiledPolicy}
 	for _, name := range agent.MCP {
 		server, exists := catalog.MCPServers[name]
 		if !exists {
@@ -53,16 +48,7 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 		}
 		snapshot.MCPServers[name] = server
 	}
-	if len(snapshot.MCPServers) > 0 {
-		snapshot.CompiledPolicy = compiledMCPPolicy
-		for _, server := range snapshot.MCPServers {
-			if server.ToolPolicy == "broker_catalog" {
-				snapshot.CompiledPolicy = compiledBrokerPolicy
-			}
-		}
-	}
 	if len(snapshot.Agent.BuiltinSkills) > 0 {
-		snapshot.CompiledPolicy = compiledSkillPolicy
 		bundle, err := runtimeapi.ReadSkillBundle()
 		if err != nil {
 			return Snapshot{}, err
@@ -121,27 +107,17 @@ func (snapshot Snapshot) validate() error {
 	if len(agent.MCP) != len(snapshot.MCPServers) {
 		return errors.New("snapshot must contain only selected MCP bindings")
 	}
-	expectedPolicy := ""
-	if len(agent.MCP) > 0 {
-		expectedPolicy = compiledMCPPolicy
-	}
-	for _, server := range snapshot.MCPServers {
-		if server.ToolPolicy == "broker_catalog" {
-			expectedPolicy = compiledBrokerPolicy
-		}
-	}
 	if len(agent.BuiltinSkills) > 0 {
 		digest, err := hex.DecodeString(snapshot.SkillBundleDigest)
 		if err != nil || len(digest) != sha256.Size || strings.ToLower(snapshot.SkillBundleDigest) != snapshot.SkillBundleDigest {
 			return errors.New("builtin skills require a pinned bundle digest")
 		}
-		expectedPolicy = compiledSkillPolicy
 	}
 	if len(agent.BuiltinSkills) == 0 && snapshot.SkillBundleDigest != "" {
 		return errors.New("skill bundle digest without selected skills")
 	}
-	if snapshot.CompiledPolicy != expectedPolicy {
-		return errors.New("unsupported compiled policy")
+	if snapshot.CompiledPolicy != compiledPolicy {
+		return errors.New("unsupported compiled policy: drain old runs with their original worker, then reload definitions for sandbox-unrestricted v5")
 	}
 	for _, name := range agent.MCP {
 		if _, exists := snapshot.MCPServers[name]; !exists {

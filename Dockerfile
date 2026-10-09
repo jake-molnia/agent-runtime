@@ -34,13 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --prefix /opt/opencode-v2 --allow-scripts=@opencode/cli --no-audit --no-fund "@opencode/cli@${OPENCODE_CHANNEL}" \
     && ln -s /opt/opencode-v2/bin/opencode2 /usr/local/bin/opencode2 \
-    && mkdir /workspace && chown node:node /workspace
+    && mkdir /workspace
 COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles
 COPY --from=skills /opt/agent-skills /opt/agent-skills
-ENV HOME=/home/node SANDBOX_ROOT=/workspace
-USER 1000:1000
+ENV HOME=/root SANDBOX_ROOT=/workspace
+USER 0:0
 WORKDIR /workspace
 EXPOSE 8080 8081 4096 9090
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "agent-runtime"]

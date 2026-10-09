@@ -172,8 +172,8 @@ func TestStagePinsSnapshotAndContracts(test *testing.T) {
 		if err := json.Unmarshal(config, &compiled); err != nil {
 			test.Fatal(err)
 		}
-		if !strings.Contains(string(compiled["permissions"]), `"effect":"deny"`) || definition.AllowProjectConfig {
-			test.Fatalf("default deny-all policy lost: %s", config)
+		if !strings.Contains(string(compiled["permissions"]), `"effect":"allow"`) || definition.AllowProjectConfig {
+			test.Fatalf("sandbox allow-all policy lost: %s", config)
 		}
 	}
 	parts, err := stage.Execute(context.Background(), testDelivery("producer", "execution-a"))

@@ -110,12 +110,12 @@ func TestLoadAndCompile(t *testing.T) {
 	if err := json.Unmarshal(config, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	deny := []any{map[string]any{"action": "*", "resource": "*", "effect": "deny"}}
-	if !reflect.DeepEqual(parsed["permissions"], deny) {
+	allow := []any{map[string]any{"action": "*", "resource": "*", "effect": "allow"}}
+	if !reflect.DeepEqual(parsed["permissions"], allow) {
 		t.Fatalf("global permissions: %s", config)
 	}
 	authored := parsed["agents"].(map[string]any)["authored"].(map[string]any)
-	if !reflect.DeepEqual(authored["permissions"], deny) || authored["mode"] != "primary" {
+	if !reflect.DeepEqual(authored["permissions"], allow) || authored["mode"] != "primary" {
 		t.Fatalf("agent permissions: %s", config)
 	}
 	if !strings.Contains(authored["system"].(string), "Review the diff") || !strings.Contains(authored["system"].(string), "Check naming conventions") {
