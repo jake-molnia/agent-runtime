@@ -27,6 +27,8 @@ type Execution struct {
 }
 
 type Agent struct {
+	Extends      string            `yaml:"extends,omitempty" json:"extends,omitempty"`
+	MCP          []string          `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	Name         string            `yaml:"-" json:"name"`
 	Digest       string            `yaml:"-" json:"digest"`
 	Version      int               `yaml:"version" json:"version"`
@@ -40,27 +42,8 @@ type Agent struct {
 	Schema       json.RawMessage   `yaml:"-" json:"schema,omitempty"`
 }
 
-type Trigger struct {
-	Adapter string   `yaml:"adapter" json:"adapter"`
-	Actions []string `yaml:"actions" json:"actions"`
-}
-
-type Policy struct {
-	Concurrency   string `yaml:"concurrency" json:"concurrency"`
-	Limit         int    `yaml:"limit" json:"limit"`
-	Deduplication string `yaml:"deduplication" json:"deduplication"`
-}
-
-type Automation struct {
-	Name    string  `yaml:"-" json:"name"`
-	Version int     `yaml:"version" json:"version"`
-	Agent   string  `yaml:"agent" json:"agent"`
-	Handler string  `yaml:"handler" json:"handler"`
-	Trigger Trigger `yaml:"trigger" json:"trigger"`
-	Policy  Policy  `yaml:"policy" json:"policy"`
-}
-
 type Profile struct {
+	MCP          []string          `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	Pool         string            `yaml:"pool" json:"pool"`
 	Namespace    string            `yaml:"namespace" json:"namespace"`
 	Directory    string            `yaml:"directory" json:"directory"`
@@ -91,15 +74,21 @@ func (profile *Profile) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type Catalog struct {
-	Agents      map[string]Agent
-	Automations map[string]Automation
-	Profiles    map[string]Profile
+	Agents     map[string]Agent
+	Profiles   map[string]Profile
+	Defaults   AgentDefaults
+	MCPServers map[string]MCPServer
 }
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 func Load(root string) (*Catalog, error) {
 	if err := noSymlinks(root); err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(filepath.Join(root, "automations")); err == nil {
+		return nil, errors.New("automations are no longer loaded by definitions; migrate them to the external workflow configuration")
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -116,10 +105,12 @@ func Load(root string) (*Catalog, error) {
 	}); err != nil {
 		return nil, err
 	}
-	catalog := &Catalog{Agents: map[string]Agent{}, Automations: map[string]Automation{}, Profiles: map[string]Profile{}}
+	catalog := &Catalog{Agents: map[string]Agent{}, Profiles: map[string]Profile{}}
 	var deployment struct {
-		Version  int                `yaml:"version"`
-		Profiles map[string]Profile `yaml:"profiles"`
+		Version    int                  `yaml:"version"`
+		Profiles   map[string]Profile   `yaml:"profiles"`
+		Defaults   *AgentDefaults       `yaml:"defaults"`
+		MCPServers map[string]MCPServer `yaml:"mcp_servers"`
 	}
 	if err := readYAML(filepath.Join(root, "deployment.yaml"), &deployment); err != nil {
 		return nil, err
@@ -127,12 +118,29 @@ func Load(root string) (*Catalog, error) {
 	if deployment.Version != 1 {
 		return nil, fmt.Errorf("unsupported deployment version: %d", deployment.Version)
 	}
+	catalog.MCPServers = deployment.MCPServers
+	if err := validateMCPServers(catalog.MCPServers); err != nil {
+		return nil, err
+	}
+	if deployment.Defaults != nil {
+		catalog.Defaults = *deployment.Defaults
+		for _, name := range BuiltinNames() {
+			agent, _ := Builtin(name)
+			agent.Model, agent.Execution = catalog.Defaults.Model, catalog.Defaults.Execution
+			catalog.Agents[name] = agent
+		}
+	}
 	for name, profile := range deployment.Profiles {
 		if !validName.MatchString(name) {
 			return nil, fmt.Errorf("invalid profile name: %q", name)
 		}
 		if err := validateProfile(profile); err != nil {
 			return nil, fmt.Errorf("profile %s: %w", name, err)
+		}
+		for _, server := range profile.MCP {
+			if _, exists := catalog.MCPServers[server]; !exists {
+				return nil, fmt.Errorf("profile %s: unknown MCP server: %s", name, server)
+			}
 		}
 		catalog.Profiles[name] = profile
 	}
@@ -146,16 +154,34 @@ func Load(root string) (*Catalog, error) {
 			return nil, fmt.Errorf("invalid agent directory: %s", name)
 		}
 		directory := filepath.Join(root, "agents", name)
-		var agent Agent
-		if err := readYAML(filepath.Join(directory, "agent.yaml"), &agent); err != nil {
-			return nil, err
-		}
-		agent.Name = name
-		instructions, err := readRegular(filepath.Join(directory, "instructions.md"))
+		data, err := readRegular(filepath.Join(directory, "agent.yaml"))
 		if err != nil {
 			return nil, err
 		}
-		agent.Instructions = string(instructions)
+		var authored Agent
+		if err := strictYAML(data, &authored); err != nil {
+			return nil, fmt.Errorf("agent %s: %w", name, err)
+		}
+		base := authored.Extends
+		if base == "" {
+			base = name
+		}
+		agent, inherited := Builtin(base)
+		if !inherited && authored.Extends != "" {
+			return nil, fmt.Errorf("agent %s: unknown builtin: %s", name, base)
+		}
+		agent.Model, agent.Execution = catalog.Defaults.Model, catalog.Defaults.Execution
+		if err := strictYAML(data, &agent); err != nil {
+			return nil, fmt.Errorf("agent %s: %w", name, err)
+		}
+		agent.Name = name
+		instructions, err := readRegular(filepath.Join(directory, "instructions.md"))
+		if err != nil && !(inherited && errors.Is(err, fs.ErrNotExist)) {
+			return nil, err
+		}
+		if err == nil {
+			agent.Instructions = string(instructions)
+		}
 		agent.Skills = map[string]string{}
 		skills, err := optionalEntries(filepath.Join(directory, "skills"))
 		if err != nil {
@@ -181,30 +207,13 @@ func Load(root string) (*Catalog, error) {
 			}
 		}
 		catalog.Agents[name] = agent
+	}
+	for name := range catalog.Agents {
 		snapshot, err := catalog.Snapshot(name)
 		if err != nil {
 			return nil, err
 		}
 		catalog.Agents[name] = snapshot.Agent
-	}
-	entries, err = optionalEntries(filepath.Join(root, "automations"))
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
-		name := strings.TrimSuffix(entry.Name(), ".yaml")
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") || !validName.MatchString(name) {
-			return nil, fmt.Errorf("invalid automation file: %s", entry.Name())
-		}
-		var automation Automation
-		if err := readYAML(filepath.Join(root, "automations", entry.Name()), &automation); err != nil {
-			return nil, err
-		}
-		automation.Name = name
-		if err := validateAutomation(automation, catalog.Agents); err != nil {
-			return nil, fmt.Errorf("automation %s: %w", name, err)
-		}
-		catalog.Automations[name] = automation
 	}
 	return catalog, nil
 }
@@ -226,42 +235,6 @@ func (catalog *Catalog) Save(root string) error {
 		if err := SaveSnapshot(root, snapshot); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func validateAutomation(automation Automation, agents map[string]Agent) error {
-	if automation.Name == "agent-run" {
-		return errors.New("agent-run is a reserved workflow name")
-	}
-	if automation.Version != 1 {
-		return fmt.Errorf("unsupported version: %d", automation.Version)
-	}
-	agent, exists := agents[automation.Agent]
-	if !exists {
-		return fmt.Errorf("unknown agent: %s", automation.Agent)
-	}
-	if automation.Handler != "github.pr-review" || automation.Trigger.Adapter != "github.pull_request" {
-		return errors.New("unsupported handler or trigger")
-	}
-	if !contains(agent.Capabilities, "github.diff") {
-		return errors.New("github.pr-review requires github.diff")
-	}
-	if len(agent.Schema) == 0 {
-		return errors.New("github.pr-review requires output_schema")
-	}
-	if len(automation.Trigger.Actions) == 0 {
-		return errors.New("trigger actions required")
-	}
-	seen := map[string]bool{}
-	for _, action := range automation.Trigger.Actions {
-		if seen[action] || !contains([]string{"opened", "synchronize", "ready_for_review"}, action) {
-			return fmt.Errorf("unsupported or repeated action: %s", action)
-		}
-		seen[action] = true
-	}
-	if automation.Policy != (Policy{Concurrency: "pull-request", Limit: 1, Deduplication: "reviewed-revision"}) {
-		return errors.New("unsupported policy")
 	}
 	return nil
 }

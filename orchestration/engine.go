@@ -31,6 +31,7 @@ import (
 )
 
 type Definition struct {
+	MCPServers         []string
 	AllowProjectConfig bool
 	Pool               string
 	Namespace          string
@@ -181,6 +182,9 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	run.Milestone(ctx, "harness_ready")
 	client, err := e.Client(req.Key, out)
 	if err != nil {
+		return out, err
+	}
+	if err := client.ReadyMCP(ctx, d.Directory, d.MCPServers); err != nil {
 		return out, err
 	}
 	err = run.Phase(ctx, telemetry.Session, func(ctx context.Context) error {

@@ -1,9 +1,11 @@
 version: 1
+defaults:
+  model: {provider: openai, id: gpt-5}
+  execution: {profile: example, timeout_seconds: 900}
 profiles:
-  review:
-    pool: agent-review
+  example:
+    pool: agent-pool
     namespace: agents
     directory: /workspace
-    capabilities: [github.diff]
     secret_files:
       openai: /secrets/openai-key

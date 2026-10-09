@@ -1,48 +1,51 @@
 # Agent runtime
 
-Filesystem-authored agents run through Hatchet, the existing sandbox controller,
-and native OpenCode V2 sessions. A trusted Go handler reviews GitHub pull requests
-without giving the model GitHub credentials.
+A Go runtime for config-owned agents and workflows, using Hatchet, isolated
+sandboxes, native OpenCode V2 sessions, and immutable typed message handoffs.
+It ships generic `code-review`, `verify`, and `adversarial-review` agent defaults.
+It does not ship or register production workflows.
 
-## Validate the checked-in reviewer
+## Author a workflow
 
-Use Go 1.27.1, the version declared by `go.mod`.
+Place this in your configuration directory as `workflows/review-change.yaml`:
+
+```yaml
+steps:
+  review:
+    agent: code-review
+    input: input
+  adversarial:
+    agent: adversarial-review
+    input: input
+  verify:
+    agent: verify
+    input: [review, adversarial]
+output: verify
+```
+
+Step names are yours. Scalar input references forward whole values unchanged;
+lists forward arrays in the declared order. There are no content-specific field
+mappings, expressions, templates, or custom Go worker requirements.
 
 ```sh
-go build -o bin/agent-runtime ./cmd/agent-runtime
+make build
 export AGENT_DEFINITIONS_DIR="$PWD/examples/definitions"
+bin/agent-runtime agents defaults
 bin/agent-runtime agents validate
-bin/agent-runtime agents list
-bin/agent-runtime agents inspect github-reviewer
-go test ./...
+bin/agent-runtime workflows list
+bin/agent-runtime workflows inspect review-change
 ```
 
-These commands validate and compile the real packages. They do not call GitHub,
-Hatchet, a model provider, or Kubernetes. `inspect` prints the resolved snapshot
-including deployment binding paths, but never reads or prints credential values.
-
-## Deploy and invoke
-
-Read [the setup guide](docs/agent-automations.md) before starting a worker.
-It covers Kubernetes pools, Hatchet, persistent storage, GitHub App permissions,
-webhook ingress, and migration from `AGENT_DEFINITIONS_FILE`.
-
-After deployment, replace the example identity with canonical values from your PR:
+After configuring and starting the worker:
 
 ```sh
-bin/agent-runtime run github-pr-review --input review.json
+bin/agent-runtime run review-change --input examples/input.json
 ```
 
-The CLI returns a Hatchet workflow run ID. The webhook invokes the same
-`github-pr-review` workflow. Neither path executes an agent in the submitting process.
+The CLI enqueues the configured workflow and returns its Hatchet run ID. The result
+task returns the selected output value and its immutable message reference.
 
-See [the authoring reference](definitions/README.md) for schemas and compilation.
-
-## Config-owned multi-agent workflows
-
-Production roles and workflow policy belong in `jake-molnia/config`, not this repo.
-Use `agentexec.Executor.Stage` to bind pinned authored packages to native execution,
-and `hatchetbridge.RegisterMessageDAG` for sequential steps, parallel investigation,
-and joins over typed immutable messages. See [config-owned composition](docs/config-owned-workflows.md)
-for the source review/verifier/adversarial/writeup contracts, ownership boundaries,
-and the investigation tools still required for production parity.
+Read [setup and ownership](docs/agent-automations.md),
+[defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).
+GitHub remains an optional adapter library; no GitHub identity, workflow or secret
+configuration is required to use the runtime.

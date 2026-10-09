@@ -13,8 +13,8 @@ import (
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/definitions"
-	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/hatchetbridge"
+	"github.com/jake-molnia/agent-runtime/workflows"
 )
 
 func loadCatalog() (*definitions.Catalog, error) {
@@ -26,7 +26,19 @@ func loadCatalog() (*definitions.Catalog, error) {
 
 func agentsCommand(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agent-runtime agents list|validate|inspect NAME")
+		return errors.New("usage: agent-runtime agents defaults|list|validate|inspect NAME")
+	}
+	if args[0] == "defaults" {
+		if len(args) != 1 {
+			return errors.New("defaults takes no arguments")
+		}
+		for _, name := range definitions.BuiltinNames() {
+			agent, _ := definitions.Builtin(name)
+			if err := json.NewEncoder(os.Stdout).Encode(agent); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	catalog, err := loadCatalog()
 	if err != nil {
@@ -37,7 +49,11 @@ func agentsCommand(args []string) error {
 		if len(args) != 1 {
 			return errors.New("validate takes no arguments")
 		}
-		fmt.Printf("valid: %d agents, %d automations, %d profiles\n", len(catalog.Agents), len(catalog.Automations), len(catalog.Profiles))
+		plans, err := workflows.Load(env("AGENT_DEFINITIONS_DIR", "/config"), catalog)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("valid: %d agents, %d workflows, %d profiles\n", len(catalog.Agents), len(plans), len(catalog.Profiles))
 	case "list":
 		if len(args) != 1 {
 			return errors.New("list takes no arguments")
@@ -106,7 +122,11 @@ func runCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	input, err := invocation(catalog, args[0], data)
+	plans, err := workflows.Load(env("AGENT_DEFINITIONS_DIR", "/config"), catalog)
+	if err != nil {
+		return err
+	}
+	input, err := invocation(plans, args[0], data)
 	if err != nil {
 		return err
 	}
@@ -115,51 +135,20 @@ func runCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer client.Close(context.Background())
-	ref, err := hatchetbridge.SubmitInput(ctx, client, args[0], input)
+	ref, err := client.RunNoWait(ctx, args[0], input)
 	if err != nil {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]string{"run_id": ref.RunId, "workflow": args[0]})
 }
 
-func invocation(catalog *definitions.Catalog, workflow string, data []byte) (hatchetbridge.Input, error) {
-	if workflow == "agent-run" {
-		var manual struct {
-			Agent  string `json:"agent"`
-			Prompt string `json:"prompt"`
-		}
-		if err := strictJSON(data, &manual); err != nil {
-			return hatchetbridge.Input{}, err
-		}
-		snapshot, err := catalog.Snapshot(manual.Agent)
-		if err != nil {
-			return hatchetbridge.Input{}, err
-		}
-		if manual.Prompt == "" {
-			return hatchetbridge.Input{}, errors.New("prompt required")
-		}
-		input := hatchetbridge.Input{Agent: manual.Agent, Digest: snapshot.Agent.Digest}
-		input.Run.Prompt = manual.Prompt
-		return input, nil
+func invocation(plans map[string]workflows.Snapshot, workflow string, data []byte) (hatchetbridge.ConfiguredInput, error) {
+	plan, exists := plans[workflow]
+	if !exists {
+		return hatchetbridge.ConfiguredInput{}, errors.New("unknown configured workflow")
 	}
-	automation, ok := catalog.Automations[workflow]
-	if !ok {
-		return hatchetbridge.Input{}, errors.New("unknown automation")
+	if len(data) > 1<<20 || !json.Valid(data) {
+		return hatchetbridge.ConfiguredInput{}, errors.New("bounded JSON input required")
 	}
-	var review githubreview.Input
-	if err := strictJSON(data, &review); err != nil {
-		return hatchetbridge.Input{}, err
-	}
-	if review.RepositoryID <= 0 || review.Number <= 0 || review.InstallationID <= 0 {
-		return hatchetbridge.Input{}, errors.New("invalid review identity")
-	}
-	snapshot, err := catalog.Snapshot(automation.Agent)
-	if err != nil {
-		return hatchetbridge.Input{}, err
-	}
-	encoded, err := json.Marshal(review)
-	if err != nil {
-		return hatchetbridge.Input{}, err
-	}
-	return hatchetbridge.Input{Agent: automation.Agent, Digest: snapshot.Agent.Digest, Review: encoded, GroupKey: fmt.Sprintf("%d/%d", review.RepositoryID, review.Number)}, nil
+	return hatchetbridge.ConfiguredInput{Digest: plan.Digest, Input: append(json.RawMessage(nil), data...)}, nil
 }

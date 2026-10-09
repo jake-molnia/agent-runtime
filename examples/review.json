@@ -1,9 +1,0 @@
-{
-  "installation_id": 12345,
-  "repository_id": 67890,
-  "repository": "your-org/your-repository",
-  "number": 1,
-  "base_sha": "1111111111111111111111111111111111111111",
-  "head_sha": "2222222222222222222222222222222222222222",
-  "delivery_id": "manual-review"
-}

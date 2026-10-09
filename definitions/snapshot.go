@@ -17,11 +17,14 @@ import (
 )
 
 type Snapshot struct {
-	Agent   Agent   `json:"agent"`
-	Profile Profile `json:"profile"`
+	Agent          Agent                `json:"agent"`
+	Profile        Profile              `json:"profile"`
+	MCPServers     map[string]MCPServer `json:"mcp_servers,omitempty"`
+	CompiledPolicy string               `json:"compiled_policy,omitempty"`
 }
 
 const compiledPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-deny-all:v1"
+const compiledMCPPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-exact-mcp:ready-no-title:v2"
 
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	agent, exists := catalog.Agents[name]
@@ -33,6 +36,19 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("agent %s: unknown profile: %s", name, agent.Execution.Profile)
 	}
 	snapshot := Snapshot{Agent: agent, Profile: profile}
+	for _, name := range agent.MCP {
+		server, exists := catalog.MCPServers[name]
+		if !exists {
+			return Snapshot{}, fmt.Errorf("agent %s: unknown MCP server: %s", agent.Name, name)
+		}
+		if snapshot.MCPServers == nil {
+			snapshot.MCPServers = map[string]MCPServer{}
+		}
+		snapshot.MCPServers[name] = server
+	}
+	if len(snapshot.MCPServers) > 0 {
+		snapshot.CompiledPolicy = compiledMCPPolicy
+	}
 	if err := snapshot.validate(); err != nil {
 		return Snapshot{}, fmt.Errorf("agent %s: %w", name, err)
 	}
@@ -40,6 +56,7 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	snapshot = Snapshot{}
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return Snapshot{}, err
 	}
@@ -67,6 +84,26 @@ func (snapshot Snapshot) ValidateOutput(output json.RawMessage) error {
 
 func (snapshot Snapshot) validate() error {
 	agent := snapshot.Agent
+	if err := validateMCPReferences(agent.MCP); err != nil {
+		return err
+	}
+	if err := validateMCPServers(snapshot.MCPServers); err != nil {
+		return err
+	}
+	if len(agent.MCP) != len(snapshot.MCPServers) {
+		return errors.New("snapshot must contain only selected MCP bindings")
+	}
+	if len(agent.MCP) > 0 && snapshot.CompiledPolicy != compiledMCPPolicy || len(agent.MCP) == 0 && snapshot.CompiledPolicy != "" {
+		return errors.New("unsupported compiled policy")
+	}
+	for _, name := range agent.MCP {
+		if _, exists := snapshot.MCPServers[name]; !exists {
+			return fmt.Errorf("unknown MCP server: %s", name)
+		}
+		if !contains(snapshot.Profile.MCP, name) {
+			return fmt.Errorf("profile does not grant MCP server: %s", name)
+		}
+	}
 	if !validName.MatchString(agent.Name) || !validName.MatchString(agent.Execution.Profile) {
 		return errors.New("invalid agent or profile name")
 	}
@@ -98,8 +135,8 @@ func (snapshot Snapshot) validate() error {
 			return fmt.Errorf("invalid or empty skill: %s", name)
 		}
 	}
-	if (agent.OutputSchema == "") != (len(agent.Schema) == 0) {
-		return errors.New("output_schema filename and schema must be supplied together")
+	if agent.OutputSchema != "" && len(agent.Schema) == 0 {
+		return errors.New("output_schema requires schema content")
 	}
 	if agent.OutputSchema != "" && !filename(agent.OutputSchema) {
 		return errors.New("output_schema must be a filename")
@@ -109,6 +146,9 @@ func (snapshot Snapshot) validate() error {
 }
 
 func validateProfile(profile Profile) error {
+	if err := validateMCPReferences(profile.MCP); err != nil {
+		return err
+	}
 	if strings.TrimSpace(profile.Pool) == "" || strings.TrimSpace(profile.Namespace) == "" || !approvedPath(profile.Directory) {
 		return errors.New("pool, namespace and absolute directory required")
 	}
@@ -129,6 +169,9 @@ func validateProfile(profile Profile) error {
 	}
 	if config == nil {
 		return errors.New("profile config must be an object")
+	}
+	if err := rejectLiteralCredentials(config); err != nil {
+		return err
 	}
 	for key, value := range config {
 		if key != "providers" {
@@ -187,10 +230,14 @@ func compileSchema(raw json.RawMessage) (*jsonschema.Schema, error) {
 
 func (snapshot Snapshot) digest() (string, error) {
 	snapshot.Agent.Digest = ""
+	policy := compiledPolicy
+	if snapshot.CompiledPolicy != "" {
+		policy = snapshot.CompiledPolicy
+	}
 	data, err := json.Marshal(struct {
 		Policy   string   `json:"policy"`
 		Snapshot Snapshot `json:"snapshot"`
-	}{Policy: compiledPolicy, Snapshot: snapshot})
+	}{Policy: policy, Snapshot: snapshot})
 	if err != nil {
 		return "", err
 	}
