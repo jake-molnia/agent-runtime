@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/orchestration"
 	"gopkg.in/yaml.v3"
 )
@@ -52,12 +53,13 @@ type Policy struct {
 }
 
 type Automation struct {
-	Name    string  `yaml:"-" json:"name"`
-	Version int     `yaml:"version" json:"version"`
-	Agent   string  `yaml:"agent" json:"agent"`
-	Handler string  `yaml:"handler" json:"handler"`
-	Trigger Trigger `yaml:"trigger" json:"trigger"`
-	Policy  Policy  `yaml:"policy" json:"policy"`
+	Name      string                 `yaml:"-" json:"name"`
+	Version   int                    `yaml:"version" json:"version"`
+	Agent     string                 `yaml:"agent" json:"agent"`
+	Handler   string                 `yaml:"handler" json:"handler"`
+	Trigger   Trigger                `yaml:"trigger" json:"trigger"`
+	Policy    Policy                 `yaml:"policy" json:"policy"`
+	Selection githubreview.Selection `yaml:"selection,omitempty" json:"selection,omitempty"`
 }
 
 type Profile struct {
@@ -201,6 +203,9 @@ func Load(root string) (*Catalog, error) {
 			return nil, err
 		}
 		automation.Name = name
+		if automation.Policy == (Policy{}) {
+			automation.Policy = Policy{Concurrency: "pull-request", Limit: 1, Deduplication: "reviewed-revision"}
+		}
 		if err := validateAutomation(automation, catalog.Agents); err != nil {
 			return nil, fmt.Errorf("automation %s: %w", name, err)
 		}
@@ -231,6 +236,9 @@ func (catalog *Catalog) Save(root string) error {
 }
 
 func validateAutomation(automation Automation, agents map[string]Agent) error {
+	if err := automation.Selection.Validate(); err != nil {
+		return err
+	}
 	if automation.Name == "agent-run" {
 		return errors.New("agent-run is a reserved workflow name")
 	}
@@ -255,7 +263,7 @@ func validateAutomation(automation Automation, agents map[string]Agent) error {
 	}
 	seen := map[string]bool{}
 	for _, action := range automation.Trigger.Actions {
-		if seen[action] || !contains([]string{"opened", "synchronize", "ready_for_review"}, action) {
+		if seen[action] || !contains([]string{"opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft", "labeled", "unlabeled", "edited"}, action) {
 			return fmt.Errorf("unsupported or repeated action: %s", action)
 		}
 		seen[action] = true

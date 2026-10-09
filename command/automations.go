@@ -89,15 +89,19 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 			closeStore()
 		}
 	}()
-	handler, err := githubreview.NewHandler(github, store)
-	if err != nil {
-		return nil, nil, nil, err
-	}
 	secret, err := os.ReadFile(env("GITHUB_WEBHOOK_SECRET_FILE", "/secrets/github-webhook"))
 	if err != nil {
 		return nil, nil, nil, errors.New("GitHub webhook secret unavailable")
 	}
 	for name, automation := range catalog.Automations {
+		handler, err := githubreview.NewHandler(github, store, githubreview.Rule{Automation: name, Selection: automation.Selection})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		handler.Enrolled = func(input githubreview.Input) (bool, error) {
+			bindings, err := repositoryBindings(env("GITHUB_REPOSITORIES_FILE", "/config/github-repositories.json"))
+			return err == nil && bindings[input.RepositoryID] == input.InstallationID, err
+		}
 		workflow, err := hatchetbridge.Build(client, engine, hatchetbridge.Lifecycle{
 			Name: name, Automation: true, Definition: definition,
 			Resolve: func(ctx context.Context, input hatchetbridge.Input, runID string) (hatchetbridge.Spec, error) {
@@ -182,7 +186,10 @@ func registerWorkflows(ctx context.Context, client *hatchet.Client, engine *orch
 	return workflows, ingress, closeStore, nil
 }
 
-func githubClient() (*githubreview.Client, map[int64]int64, error) {
+func githubClient(paths ...string) (*githubreview.Client, map[int64]int64, error) {
+	if len(paths) > 1 {
+		return nil, nil, errors.New("only one enrollment file may be selected")
+	}
 	appID, err := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
 	if err != nil {
 		return nil, nil, errors.New("invalid GITHUB_APP_ID")
@@ -209,13 +216,13 @@ func githubClient() (*githubreview.Client, map[int64]int64, error) {
 			return nil, nil, errors.New("GitHub App key must be RSA")
 		}
 	}
-	data, err = os.ReadFile(env("GITHUB_REPOSITORIES_FILE", "/config/github-repositories.json"))
-	if err != nil {
-		return nil, nil, errors.New("GitHub repository allowlist unavailable")
+	path := env("GITHUB_REPOSITORIES_FILE", "/config/github-repositories.json")
+	if len(paths) == 1 {
+		path = paths[0]
 	}
-	var allowed map[int64]int64
-	if err := strictJSON(data, &allowed); err != nil {
-		return nil, nil, errors.New("invalid GitHub repository allowlist")
+	allowed, err := repositoryBindings(path)
+	if err != nil {
+		return nil, nil, err
 	}
 	client, err := githubreview.NewClient(githubreview.ClientConfig{AppID: appID, PrivateKey: key, Allowed: allowed})
 	return client, allowed, err

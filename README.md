@@ -38,6 +38,9 @@ The CLI returns a Hatchet workflow run ID. The webhook invokes the same
 
 See [the authoring reference](definitions/README.md) for schemas and compilation.
 
+See [GitHub management](docs/github-management.md) for App inspection, repository
+discovery/enrollment, per-workflow PR selection, and eligibility explanations.
+
 ## Config-owned multi-agent workflows
 
 Production roles and workflow policy belong in `jake-molnia/config`, not this repo.

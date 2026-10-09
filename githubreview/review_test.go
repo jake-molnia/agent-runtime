@@ -42,10 +42,14 @@ type fakeAPI struct {
 	retainReview   bool
 	canonicalCalls int
 	changeAt       int
+	onCanonical    func(int, *PullRequest)
 }
 
 func (api *fakeAPI) Canonical(ctx context.Context, input Input) (PullRequest, error) {
 	api.canonicalCalls++
+	if api.onCanonical != nil {
+		api.onCanonical(api.canonicalCalls, &api.current)
+	}
 	if api.changeAt == api.canonicalCalls {
 		api.current.HeadSHA = strings.Repeat("c", 40)
 	}

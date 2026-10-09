@@ -87,6 +87,44 @@ func loaded(t *testing.T, root string) *Catalog {
 	return catalog
 }
 
+func TestFullSelectionYAMLAndDefaultPolicy(t *testing.T) {
+	root := fixture(t)
+	config := `version: 1
+agent: reviewer
+handler: github.pr-review
+trigger:
+  adapter: github.pull_request
+  actions: [opened, synchronize, ready_for_review, labeled]
+selection:
+  repositories:
+    include: [acme/api, acme/web]
+    exclude: [acme/legacy]
+  pull_requests:
+    base_branches: [main, "release/*"]
+    drafts: false
+    labels:
+      require_any: [agent-review]
+      exclude_any: [skip-agent-review]
+    authors:
+      exclude: ["dependabot[bot]", "renovate[bot]"]
+    changed_paths:
+      include: ["src/**", "packages/**"]
+      exclude: ["docs/**", "**/*.md"]
+`
+	writeFixture(t, root, "automations/review.yaml", config)
+	catalog := loaded(t, root)
+	automation := catalog.Automations["review"]
+	if automation.Policy.Limit != 1 || len(automation.Selection.Repositories.Include) != 2 || automation.Selection.PullRequests.Drafts == nil || *automation.Selection.PullRequests.Drafts {
+		t.Fatalf("%+v", automation)
+	}
+	for _, invalid := range []string{strings.Replace(config, "require_any", "required_any", 1), strings.Replace(config, "src/**", "src/[", 1), strings.Replace(config, "labeled", "unsupported", 1)} {
+		writeFixture(t, root, "automations/review.yaml", invalid)
+		if _, err := Load(root); err == nil {
+			t.Fatal("invalid selection accepted")
+		}
+	}
+}
+
 func TestLoadAndCompile(t *testing.T) {
 	root := fixture(t)
 	catalog := loaded(t, root)
