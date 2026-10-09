@@ -86,12 +86,16 @@ func (c *Controller) load(ctx context.Context, profile, workspace string) (State
 	return s, obj, nil
 }
 func (c *Controller) save(ctx context.Context, obj *unstructured.Unstructured, s State) error {
+	c.invalidateGateway(s.Request.Profile, s.Request.WorkspaceID)
+	defer c.invalidateGateway(s.Request.Profile, s.Request.WorkspaceID)
 	encoded, _ := json.Marshal(s)
 	patch, _ := json.Marshal([]map[string]any{{"op": "test", "path": "/metadata/uid", "value": obj.GetUID()}, {"op": "test", "path": "/metadata/resourceVersion", "value": obj.GetResourceVersion()}, {"op": "add", "path": "/metadata/annotations/agent-runtime~1t3-lifecycle", "value": string(encoded)}})
 	_, err := c.Control.API.Resource(sandbox.WorkspacePVCs).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.JSONPatchType, patch, metav1.PatchOptions{})
 	return err
 }
 func (c *Controller) Admit(ctx context.Context, r Request) (State, error) {
+	c.invalidateGateway(r.Profile, r.WorkspaceID)
+	defer c.invalidateGateway(r.Profile, r.WorkspaceID)
 	if err := r.Validate(); err != nil {
 		return State{}, err
 	}

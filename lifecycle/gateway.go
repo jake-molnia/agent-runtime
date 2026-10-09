@@ -1,7 +1,6 @@
 package lifecycle
 
 import (
-	"crypto/subtle"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,18 +14,13 @@ func executionURL(base, profile, workspace string) string {
 func (c *Controller) gateway() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		profile, workspace := r.PathValue("profile"), r.PathValue("workspaceId")
-		state, _, err := c.load(r.Context(), profile, workspace)
-		expected := ""
-		if err == nil && state.Phase == "running" && state.Handle != nil {
-			expected = "Bearer " + c.token(workspace, state.Epoch)
-		}
-		if expected == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		access, err := c.Access(r.Context(), profile, workspace)
-		if err != nil || access.Token == "" || "Bearer "+access.Token != expected {
-			http.Error(w, "workspace unavailable", 503)
+		access, status := c.gatewayAccess(r.Context(), profile, workspace, r.Header.Get("Authorization"))
+		if status != http.StatusOK {
+			message := "workspace unavailable"
+			if status == http.StatusUnauthorized {
+				message = "unauthorized"
+			}
+			http.Error(w, message, status)
 			return
 		}
 		target, err := url.Parse(access.State.Endpoint)
@@ -64,6 +58,7 @@ func (c *Controller) gateway() http.Handler {
 			},
 			FlushInterval: -1,
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+				c.invalidateGateway(profile, workspace)
 				http.Error(w, "execution unavailable", http.StatusBadGateway)
 			},
 		}

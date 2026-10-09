@@ -38,6 +38,7 @@ func t3Worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	config.QPS, config.Burst = 20, 40
 	control, err := sandbox.NewControl(config)
 	if err != nil {
 		return err
