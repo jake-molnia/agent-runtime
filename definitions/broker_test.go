@@ -24,7 +24,7 @@ func TestBrokerCatalogPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.CompiledPolicy != compiledBrokerPolicy || snapshot.Agent.Digest == before.Agent.Digest {
+	if snapshot.CompiledPolicy != compiledPolicy || snapshot.Agent.Digest == before.Agent.Digest {
 		t.Fatal("broker authority not revision-pinned")
 	}
 	definition, err := snapshot.Definition()
@@ -41,10 +41,10 @@ func TestBrokerCatalogPolicy(t *testing.T) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Permissions) != 2 || config.Permissions[0].Effect != "deny" || config.Permissions[1].Action != "broker_*" {
+	if len(config.Permissions) != 1 || config.Permissions[0] != (permission{Action: "*", Resource: "*", Effect: "allow"}) {
 		t.Fatalf("unexpected grants: %s", raw)
 	}
-	snapshot.CompiledPolicy = compiledMCPPolicy
+	snapshot.CompiledPolicy = "legacy-exact"
 	if err := snapshot.validate(); err == nil {
 		t.Fatal("broker allowed under legacy policy")
 	}
@@ -128,7 +128,7 @@ func TestBuiltinSkillsArePinnedAndScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.SkillBundleDigest) != 64 || snapshot.CompiledPolicy != compiledSkillPolicy {
+	if len(snapshot.SkillBundleDigest) != 64 || snapshot.CompiledPolicy != compiledPolicy {
 		t.Fatal("skills were not pinned")
 	}
 	definition, err := snapshot.Definition()
@@ -149,23 +149,10 @@ func TestBuiltinSkillsArePinnedAndScoped(t *testing.T) {
 	if len(config.Skills) != 1 || config.Skills[0] != "/opt/agent-skills" || definition.SkillBundleDigest != snapshot.SkillBundleDigest {
 		t.Fatalf("wrong skill installation: %s", raw)
 	}
-	for _, grant := range config.Permissions {
-		if grant.Effect != "allow" {
-			continue
-		}
-		switch grant.Action {
-		case "skill":
-			if grant.Resource != "review" {
-				t.Fatal("unselected skill allowed")
-			}
-		case "read", "external_directory":
-			if grant.Resource != "/opt/agent-skills/**" && grant.Resource != "/opt/agent-skill-bundles/**" {
-				t.Fatal("non-bundle filesystem grant")
-			}
-		default:
-			t.Fatalf("unexpected grant %+v", grant)
-		}
+	if len(config.Permissions) != 1 || config.Permissions[0] != (permission{Action: "*", Resource: "*", Effect: "allow"}) {
+		t.Fatalf("builtin skills introduced tool restrictions: %s", raw)
 	}
+
 	if err := os.WriteFile(filepath.Join(root, "sources.json"), []byte(`{"revision":"next"}`), 0600); err != nil {
 		t.Fatal(err)
 	}

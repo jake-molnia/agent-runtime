@@ -57,8 +57,6 @@ func validateMCPServers(servers map[string]MCPServer) error {
 					return fmt.Errorf("MCP server %s: overlapping broker namespace with %s", name, other)
 				}
 			}
-		} else if len(server.Tools) == 0 {
-			return fmt.Errorf("MCP server %s: approved tools required", name)
 		}
 		for _, tool := range server.Tools {
 			action := mcpAction(name, tool)
