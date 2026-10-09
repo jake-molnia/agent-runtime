@@ -66,8 +66,13 @@ func startRuntime(t *testing.T, root string) (map[string]string, *orchestration.
 	if err != nil {
 		t.Fatal(err)
 	}
+	binDir := t.TempDir()
+	if err := os.Symlink(binary, filepath.Join(binDir, "opencode")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	engine := &orchestration.Engine{SecretKey: []byte("test-secret-key"), Artifacts: artifacts.Directory{Root: t.TempDir()}}
-	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: binary}
+	supervisor := &runtimeapi.Supervisor{Root: root}
 	lifetime, stop := context.WithCancel(context.Background())
 	handler := supervisor.Handler(lifetime)
 	initialized := false

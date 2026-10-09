@@ -78,7 +78,7 @@ func serve(ctx context.Context) error {
 		}
 		g.Go(func() error { return httpServer(ctx, "127.0.0.1:8082", handler) })
 	}
-	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: env("OPENCODE_BINARY", "opencode2"), TailscaleSocket: socket}
+	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: env("OPENCODE_BINARY", "opencode"), TailscaleSocket: socket}
 	g.Go(func() error { return httpServer(ctx, ":8081", supervisor.Handler(ctx)) })
 	return g.Wait()
 }

@@ -145,7 +145,7 @@ func (s *Supervisor) Initialize(ctx context.Context, input Init) (InitResult, er
 	start := time.Now()
 	binary := s.OpenCodeBinary
 	if binary == "" {
-		binary = "opencode2"
+		binary = "opencode"
 	}
 	cmd := exec.Command(binary, "serve", "--hostname", "0.0.0.0", "--port", "4096")
 	cmd.Dir = root
