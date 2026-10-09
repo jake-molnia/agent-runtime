@@ -60,9 +60,6 @@ func (config Integration) Validate() error {
 	if config.Version != 1 || !name.MatchString(config.Name) || !name.MatchString(config.Workflow) || config.Name == config.Workflow || !name.MatchString(config.WriteupStep) || len(config.CandidateSteps) == 0 || len(config.CandidateSteps) > 2 || len(config.Repositories) == 0 {
 		return errors.New("invalid review integration")
 	}
-	if config.NativeEvents && len(config.WorkerLabels) > 0 {
-		return errors.New("native events cannot require worker labels; use authenticated webhook submission for placement")
-	}
 	seen := map[string]bool{}
 	for _, step := range config.CandidateSteps {
 		if !name.MatchString(step) || seen[step] || step == config.WriteupStep {

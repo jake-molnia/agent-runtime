@@ -135,7 +135,7 @@ func runCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer client.Close(context.Background())
-	ref, err := client.RunNoWait(ctx, args[0], input)
+	ref, err := client.RunNoWait(ctx, hatchetbridge.ConfiguredWorkflowName(args[0], input.Digest), input)
 	if err != nil {
 		return err
 	}

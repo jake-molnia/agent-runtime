@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+type permission struct {
+	Action   string `json:"action"`
+	Resource string `json:"resource"`
+	Effect   string `json:"effect"`
+}
+
 const agentYAML = `version: 1
 description: Review pull requests
 model:
@@ -110,12 +116,12 @@ func TestLoadAndCompile(t *testing.T) {
 	if err := json.Unmarshal(config, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	deny := []any{map[string]any{"action": "*", "resource": "*", "effect": "deny"}}
-	if !reflect.DeepEqual(parsed["permissions"], deny) {
+	allow := []any{map[string]any{"action": "*", "resource": "*", "effect": "allow"}}
+	if !reflect.DeepEqual(parsed["permissions"], allow) {
 		t.Fatalf("global permissions: %s", config)
 	}
 	authored := parsed["agents"].(map[string]any)["authored"].(map[string]any)
-	if !reflect.DeepEqual(authored["permissions"], deny) || authored["mode"] != "primary" {
+	if !reflect.DeepEqual(authored["permissions"], allow) || authored["mode"] != "primary" {
 		t.Fatalf("agent permissions: %s", config)
 	}
 	if !strings.Contains(authored["system"].(string), "Review the diff") || !strings.Contains(authored["system"].(string), "Check naming conventions") {
@@ -440,5 +446,16 @@ func TestConcurrentSnapshotSave(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(root, "snapshots"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("snapshot files: %v %v", entries, err)
+	}
+}
+
+func TestSnapshotPinsHarnessConfig(t *testing.T) {
+	snapshot, err := loaded(t, fixture(t)).Snapshot("reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.HarnessConfigDigest = strings.Repeat("a", 64)
+	if _, err = snapshot.Definition(); err == nil || !strings.Contains(err.Error(), "harness configuration") {
+		t.Fatalf("changed harness config accepted: %v", err)
 	}
 }

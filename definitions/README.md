@@ -1,8 +1,9 @@
 # Filesystem catalog reference
 
 `definitions` loads agent behavior and trusted deployment profiles separately.
-Authored model tools are denied unless an agent selects an approved remote MCP
-connection or bundled skills. MCP connections must be granted by its profile.
+Agents may run all native tools inside their disposable sandbox without permission
+prompts, including shell commands, filesystem writes, and subagents. The sandbox
+is the isolation boundary. MCP connections must be granted by the profile.
 `github.diff` remains an application
 capability, not a model tool grant. Definitions do not load workflows.
 
@@ -104,7 +105,7 @@ the named file. Built-in lookups return independent values.
 
 ## Remote MCP grants
 
-Deployment owns the approved server URLs and tool authorization mode. Agents
+Deployment owns the selected server URLs. Agents
 select connection names with `mcp: [broker]`; their profiles must grant every
 selected connection with the same `mcp` list syntax. Unknown or ungranted
 connections fail loading, including unknown profile grants.
@@ -113,16 +114,13 @@ connections fail loading, including unknown profile grants.
 mcp_servers:
   broker:
     url: https://broker.example/mcp
-    tools: [read_diff, fetch_issue]
 ```
 
-For Aperture-managed catalogs, replace `tools` with `tool_policy: broker_catalog`.
-This explicitly trusts tools exposed by that broker for the sandbox identity.
-The compiler grants only the selected MCP action namespace; overlapping server
-namespaces and collisions with native actions fail validation. New authorized
-broker tools require no local list update. The broker must enforce authorization
-on invocation as well as catalog listing. Shell and workspace file tools remain
-denied locally. Exact `tools` lists remain the default.
+Aperture controls its catalog and authorization for the sandbox's tagged identity.
+All tools returned by selected connections are available. `tools` and
+`tool_policy: broker_catalog` remain accepted for deployment-file migration, but
+neither limits model tools. New configurations only need `url`. Existing tool
+lists still undergo syntax validation and remain in the snapshot digest.
 
 Only `url`, `tools`, and `tool_policy` are accepted. Commands, environment variables, OAuth
 credentials, tokens, passwords, and headers are not supported. URLs reject
@@ -139,31 +137,35 @@ names, duplicate tools, and permission-name collisions fail loading.
 
 `builtin_skills: [code-review, pstack-tdd]` selects skill IDs from the immutable
 image catalog. The snapshot pins its bundle digest. The sandbox checks that
-digest before starting OpenCode. Selected skills can read their trusted bundled
-reference files; they do not gain workspace reads, shell execution, or writes.
+digest before starting OpenCode. Selecting a bundled skill enables discovery of
+the installed catalog; every installed skill and its supporting files can be read.
+The selection does not restrict the native tools or filesystem.
 Both worker and sandbox need the matching bundle. See
 [bundled engineering skills](../docs/sandbox-skills.md) for packaging and updates.
 
 ## Compilation and output validation
 
 Compilation selects `authored` and maps models to the V2 `providerID` and `id` fields.
-It combines instructions with skill content in sorted skill-name order.
+It combines instructions with skill content in sorted skill-name order and appends
+the pinned JSON schema under a separate output-format instruction. Schema delivery
+uses the trusted system message; task inputs and tool outputs remain data. Final
+output is still validated against the schema.
 OpenCode V2 configuration contains `agents.authored.system`, `mode: primary`,
-and ordered `permissions` arrays at both global and agent scope, each containing
-`{action: "*", resource: "*", effect: "deny"}`. Selected MCP tools add exact
-`allow` rules after that deny rule at both scopes. Broker catalog mode grants
-the selected server namespace. Bundled skills add exact skill IDs and reads
-under the immutable skill trees. Shell, workspace reads, and writes remain
-denied. Project configuration is disabled.
-Legacy `agent`, `prompt`, `permission`, and `tools` fields are not emitted.
+and `permissions: [{action: "*", resource: "*", effect: "allow"}]` at both global
+and agent scope. Project configuration remains disabled so repository files do
+not silently replace pinned instructions or models. This does not restrict shell
+commands or file access. Legacy V1 fields are not emitted.
+
+The sandbox image runs as root with a writable runtime home, so agents can install
+packages and change files within the container. The worker remains non-root.
+Deployment must retain the disposable sandbox and its network boundary; root
+inside the sandbox does not require privileged containers or host mounts.
 
 The compiler targets OpenCode **v2.0.26**, commit
 `9b4ec5714d481559990db0a816d5dec19541a814`, not the V1 configuration format.
 Remote bindings use `mcp.servers.<name>` with `type: remote`, `url`,
 `oauth: false`, and `codemode: false`. OAuth integration enrollment is disabled.
-Only selected servers are emitted. Permissions use `<server>_<native-tool>`,
-replacing tool characters outside `[a-zA-Z0-9_-]` with underscores, and
-`resource: "*"`, exactly as the pinned runtime asserts.
+Only selected servers are emitted. No per-tool MCP permissions are emitted.
 
 Pinned primary sources:
 
@@ -194,13 +196,19 @@ value, and validates it against the compiled schema. It fails if no schema exist
 an atomic exclusive hard link, and a directory synchronization. Saving the
 same snapshot again succeeds; corrupt existing snapshots are never overwritten.
 
+The checked-in [harness config](../harnesses/opencode.json) is the compiler base.
+Its digest is pinned in each snapshot and checked before compilation.
+
 The SHA-256 digest includes the agent settings, instructions, skill content,
 schema, resolved profile, credential binding paths, and compiler policy version.
 Selected MCP URLs, tool authorization mode, explicit lists, and any bundled skill
 manifest digest are included; unselected registry entries are
-excluded. MCP snapshots carry an explicit compiler policy marker, and unsupported
-markers cannot replay. Absent new fields use `omitempty` and preserve legacy
-snapshot digests and the previous deny-all compiler policy.
+excluded. Every new snapshot carries the explicit
+`opencode-v2.0.26:authored-primary:sandbox-unrestricted:repo-harness-config:schema-system:v6` policy.
+Earlier policies are rejected instead of silently widening their permissions or
+changing their prompts. Before upgrading, drain old runs using their original
+worker, then reload the source definitions to create v6 snapshots. Persisted old
+runs cannot be resumed by the new worker.
 The digest excludes credential file contents. JSON formatting and object-key ordering
 do not affect it. Credential rotation does not change the digest.
 

@@ -212,7 +212,7 @@ func configuredTestJSON(test *testing.T, got, want json.RawMessage) {
 func TestConfiguredWorkflowDeclaration(t *testing.T) {
 	fixture := newConfiguredTestFixture(t)
 	declaration, regular, durable, failure := fixture.workflow.Dump()
-	if declaration.Name != "_"+fixture.plan.Workflow.Name || declaration.Version != fixture.plan.Digest || len(regular) != 2 || len(durable) != 3 || failure != nil || len(declaration.Tasks) != 5 || len(declaration.EventTriggers) != 0 {
+	if declaration.Name != "_"+ConfiguredWorkflowName(fixture.plan.Workflow.Name, fixture.plan.Digest) || declaration.Version != fixture.plan.Digest || len(regular) != 2 || len(durable) != 3 || failure != nil || len(declaration.Tasks) != 5 || len(declaration.EventTriggers) != 0 {
 		t.Fatalf("unexpected configured graph: %+v", declaration)
 	}
 	parents := map[string][]string{"resolve": nil, "review": {"resolve"}, "adversarial": {"resolve"}, "verify": {"resolve", "review", "adversarial"}, "result": {"resolve", "verify"}}
@@ -222,7 +222,7 @@ func TestConfiguredWorkflowDeclaration(t *testing.T) {
 			t.Errorf("%s parents = %v, want %v", task.ReadableId, task.Parents, want)
 		}
 		isDurable := task.ReadableId != "resolve" && task.ReadableId != "result"
-		if task.Retries != 0 || task.IsDurable != isDurable || task.Action != "_"+fixture.plan.Workflow.Name+":"+task.ReadableId {
+		if task.Retries != 0 || task.IsDurable != isDurable || task.Action != "_"+ConfiguredWorkflowName(fixture.plan.Workflow.Name, fixture.plan.Digest)+":"+task.ReadableId {
 			t.Errorf("unexpected step policy: %+v", task)
 		}
 		if isDurable && (task.ScheduleTimeout == nil || *task.ScheduleTimeout != "3600s") {
@@ -474,6 +474,14 @@ func TestConfiguredWorkflowPinnedRecoveryAfterCatalogChanges(t *testing.T) {
 	current := configuredTestCapture(t, configuredTestWorkflow(), catalog)
 	fixture := configuredTestRegister(t, current, root, newConfiguredTestBackend(t), messages.Directory{Root: t.TempDir()})
 	fixture.ctx.input.Digest = old.Digest
+	if _, err := fixture.callbacks["resolve"](fixture.ctx); err == nil {
+		t.Fatal("new revision accepted old run")
+	}
+	previous := configuredTestRegister(t, old, root, newConfiguredTestBackend(t), messages.Directory{Root: t.TempDir()})
+	if fixture.workflow.GetName() == previous.workflow.GetName() {
+		t.Fatal("revisions share scheduler actions")
+	}
+	fixture = previous
 	for _, id := range []string{"resolve", "review", "adversarial", "verify", "result"} {
 		fixture.runStep(t, id)
 	}

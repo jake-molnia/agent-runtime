@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home worker
 COPY --from=build /out/agent-runtime /usr/local/bin/agent-runtime
+COPY harnesses/opencode.json /etc/agent-runtime/harnesses/opencode.json
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles
 COPY --from=skills /opt/agent-skills /opt/agent-skills
 USER 1000:1000
@@ -41,8 +42,7 @@ RUN sh /tmp/install-desktop-tools.sh \
     && npm install --global --allow-scripts=@opencode/cli --no-audit --no-fund @opencode/cli@2.0.26 \
     && npm cache clean --force \
     && rm /tmp/install-desktop-tools.sh \
-    && mkdir -p /workspace \
-    && chown node:node /workspace
+    && mkdir -p /workspace
 COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
 COPY --from=desktop-tools /out/aiod /out/computer-use /usr/local/bin/
@@ -51,8 +51,12 @@ COPY desktop/skills/ /usr/local/share/agent-runtime/skills/
 COPY desktop/chromium-policy.json /etc/chromium/policies/managed/agent-runtime.json
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles
 COPY --from=skills /opt/agent-skills /opt/agent-skills
-ENV HOME=/home/node SANDBOX_ROOT=/workspace DISPLAY=:99 PATH="/opt/markitdown/bin:${PATH}"
-USER 1000:1000
+COPY harnesses/opencode.json /etc/agent-runtime/harnesses/opencode.json
+ENV HOME=/root USER=root LOGNAME=root SANDBOX_ROOT=/workspace DISPLAY=:99 \
+    PATH="/opt/markitdown/bin:${PATH}" SANDBOX_CHROMIUM_SANDBOX=disabled \
+    OPENCODE_CONFIG=/etc/agent-runtime/harnesses/opencode.json \
+    OPENCODE_DISABLE_PROJECT_CONFIG=1
+USER 0:0
 WORKDIR /workspace
 EXPOSE 8080 8081 4096 9090
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "agent-runtime"]

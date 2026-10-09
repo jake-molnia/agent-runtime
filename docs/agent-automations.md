@@ -53,7 +53,7 @@ trusted-package file rules. Standalone packages still require instructions.
 
 ## Approve MCP tools
 
-The deployment configuration approves remote broker connections and exact tools:
+The deployment configuration selects remote MCP connections:
 
 ```yaml
 version: 1
@@ -63,7 +63,6 @@ defaults:
 mcp_servers:
   issue-comments:
     url: https://approved-broker.internal/mcp
-    tools: [publish_comment]
 profiles:
   investigation:
     pool: agent-pool
@@ -80,22 +79,18 @@ connections enter the native session configuration. URLs reject credentials,
 query strings and fragments. HTTPS is required except literal-loopback HTTP for
 local testing. Arbitrary local subprocess MCP servers are not supported.
 
-The pinned native config preserves deny-all and grants approved MCP actions.
-To let Aperture own the catalog, use `tool_policy: broker_catalog` instead of
-`tools`. That explicit mode grants the selected server's action namespace while
-the broker enforces identity-based tool authorization. Server namespace overlaps
-are rejected. With ephemeral profile tags and `APERTURE_UPSTREAM` set on the
-sandbox, use `http://127.0.0.1:8082/v1/mcp` to reach Aperture through the sandbox's
-Tailscale identity. Adding an authorized backend in Aperture then requires no
-duplicate tool list here.
+New snapshots allow all native tools inside the disposable sandbox, including
+shell, filesystem access, execute, and subagents. The sandbox image runs as root.
+Config chooses MCP endpoints; every tool exposed by a selected connection is
+available locally. Aperture remains responsible for remote authorization.
+`tools` and `tool_policy` are accepted as legacy metadata, not enforcement.
 
-Shell, workspace filesystem access, arbitrary execute, and interactive OAuth
-enrollment remain unavailable. Agents can separately select image-bundled skills
-with `builtin_skills`; those grants permit reading only the trusted skill trees.
-OpenCode initializes and manages the remote
-MCP connections within each isolated session; deleting the sandbox terminates them.
-Use deployment-managed network identity/TLS for the approved broker. This format
-does not put bearer tokens or private keys into workflow snapshots.
+With profile tags and `APERTURE_UPSTREAM` on the sandbox,
+`http://127.0.0.1:8082/v1/mcp` reaches Aperture through that sandbox's ephemeral
+identity. Builtin skills activate the packaged catalog. Project configuration
+remains suppressed so repository files cannot silently replace pinned prompts
+or deployment-selected endpoints. The agent can still execute arbitrary code
+inside its sandbox. The trusted system instructions include the output schema.
 
 The publishing broker must enforce repository/resource authorization, payload
 validation, revision checks, and deduplication. Instructions cannot authorize an
@@ -132,7 +127,7 @@ References imply dependencies. Independent root steps can run in parallel.
 Every step must contribute to the selected output. Cycles, unknown references,
 duplicate/unknown YAML fields, invalid names, malformed refs and missing schemas
 fail before registration. A workflow has at most 32 steps; values are bounded to
-1 MiB. No selectors, interpolation, expression language or executable hooks are
+4 MiB. No selectors, interpolation, expression language or executable hooks are
 loaded from YAML.
 
 The result task returns `value`, the selected step's complete JSON result, along
@@ -186,7 +181,8 @@ profiles and public MCP bindings. CLI submission pins a digest. Resolve and each
 task reload that artifact, not mutable source files. Old prompts, models and
 grants do not silently change when a new catalog is deployed.
 
-Keep the shared snapshots and message directory available to all eligible workers.
+Scheduler action names include snapshot revision identity. Keep the shared snapshots
+and message directory available to all eligible workers.
 Do not remove referenced snapshots. Maintain compatible workers while changing
 step names or topology; a worker without an old task handler cannot execute it.
 Changing current authoring is not retroactive revocation of old pinned grants.
@@ -195,8 +191,7 @@ sessions keep their bootstrap credentials.
 
 Each step is a durable Hatchet task and has its own sandbox/session identity.
 It uses the existing native lifecycle, exports before validation/cleanup, retains
-failed exports until lease expiry, and reports cleanup failures. Permissions are
-not auto-approved. Completed message outputs are immutable and reusable on replay.
+failed exports until lease expiry, and reports cleanup failures. Native tool execution requires no permission prompts. Completed message outputs are immutable and reusable on replay.
 No automatic model-execution retries are enabled; explicit replay can recompute
 after a crash between successful execution and message persistence. Exactly-once
 model execution is not claimed. Private input/output belongs in secured Hatchet,

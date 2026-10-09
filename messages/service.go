@@ -305,13 +305,17 @@ func (delivery Delivery) Prompt() (string, error) {
 			return "", errors.New("file delivery requires a native attachment adapter")
 		}
 	}
-	data, err := json.Marshal(struct {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(struct {
 		Message   Message   `json:"message"`
 		Reference Reference `json:"reference"`
 	}{Message: delivery.Message, Reference: delivery.Reference})
 	if err != nil {
 		return "", err
 	}
+	data := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
 	if len(data) > MaxMessageBytes {
 		return "", errors.New("delivery exceeds prompt limit")
 	}

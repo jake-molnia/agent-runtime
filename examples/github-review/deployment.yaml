@@ -5,12 +5,11 @@ defaults:
 mcp_servers:
   aperture:
     url: http://127.0.0.1:8082/v1/mcp
-    tool_policy: broker_catalog
 profiles:
   review:
     pool: review-pool
     namespace: agent-runs
-    directory: /workspace
+    directory: /workspace/checkout
     tags: [tag:agent-sandbox, tag:pr-review, tag:pr-review-config]
     mcp: [aperture]
     secret_files:

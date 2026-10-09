@@ -53,7 +53,7 @@ func configuredService(plan workflows.Snapshot, executor *agentexec.Executor, st
 	return messages.New(store, validators, stages, 0)
 }
 
-func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot) (*hatchet.Workflow, error) {
+func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot, hooks ...ConfiguredHooks) (*hatchet.Workflow, error) {
 	if client == nil || store == nil || root == "" {
 		return nil, errors.New("configured workflow dependencies required")
 	}
@@ -73,6 +73,9 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 	}
 	name := current.Workflow.Name
 	load := func(digest string) (workflows.Snapshot, error) {
+		if digest != current.Digest {
+			return workflows.Snapshot{}, errors.New("workflow digest requires its registered revision")
+		}
 		plan, err := workflows.Read(root, digest)
 		if err != nil {
 			return plan, err
@@ -82,13 +85,13 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		}
 		return plan, nil
 	}
-	workflow := client.NewWorkflow(name, hatchet.WithWorkflowVersion(current.Digest))
+	workflow := client.NewWorkflow(ConfiguredWorkflowName(name, current.Digest), hatchet.WithWorkflowVersion(current.Digest))
 	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
 		plan, err := load(input.Digest)
 		if err != nil {
 			return ConfiguredState{}, err
 		}
-		if !json.Valid(input.Input) || len(input.Input) > 1<<20 {
+		if !json.Valid(input.Input) || len(input.Input) > workflows.MaxInputBytes {
 			return ConfiguredState{}, errors.New("bounded JSON workflow input required")
 		}
 		service, err := configuredService(plan, executor, store)
@@ -160,7 +163,21 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			if err != nil {
 				return ConfiguredResult{}, err
 			}
-			bounded := agentexec.WithInteractionWait(ctx.GetContext(), func(waitCtx context.Context, sessionID, kind string) error {
+			stepContext := ctx.GetContext()
+			for _, hook := range hooks {
+				if hook.BeforeStep == nil {
+					continue
+				}
+				var finish func()
+				stepContext, finish, err = hook.BeforeStep(stepContext, ConfiguredStep{Workflow: name, Step: id, RunID: ctx.WorkflowRunId(), Initial: append(json.RawMessage(nil), initialValue...)})
+				if err != nil {
+					return ConfiguredResult{}, err
+				}
+				if finish != nil {
+					defer finish()
+				}
+			}
+			bounded := agentexec.WithInteractionWait(stepContext, func(waitCtx context.Context, sessionID, kind string) error {
 				return interactionWait(ctx, sessionID)(waitCtx, kind)
 			})
 			ref, err = service.Invoke(bounded, ctx.WorkflowRunId(), messages.Invocation{Stage: messages.Actor{Agent: snapshot.Agent.Name, Revision: snapshot.Agent.Digest}, Input: ref, TaskID: id, To: name})

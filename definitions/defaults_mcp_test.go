@@ -155,13 +155,13 @@ func TestInvalidDefaultAndInheritanceReferences(t *testing.T) {
 	}
 }
 
-func TestMCPCompileExactReleasePolicy(t *testing.T) {
+func TestMCPCompileSandboxPolicy(t *testing.T) {
 	catalog := loaded(t, mcpFixture(t))
 	snapshot, err := catalog.Snapshot("verify")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.MCPServers) != 1 || snapshot.CompiledPolicy != compiledMCPPolicy {
+	if len(snapshot.MCPServers) != 1 || snapshot.CompiledPolicy != compiledPolicy {
 		t.Fatalf("unselected bindings exposed: %#v", snapshot)
 	}
 	definition, err := snapshot.Definition()
@@ -192,21 +192,11 @@ func TestMCPCompileExactReleasePolicy(t *testing.T) {
 	if len(config.Agents) != 2 || !config.Agents["title"].Disabled || config.Agents["authored"].Disabled {
 		t.Fatalf("MCP execution must disable auxiliary title generation: %s", data)
 	}
-	rules := []permission{{Action: "*", Resource: "*", Effect: "deny"}, {Action: "broker_fetch_issue", Resource: "*", Effect: "allow"}, {Action: "broker_read_diff", Resource: "*", Effect: "allow"}}
+	rules := []permission{{Action: "*", Resource: "*", Effect: "allow"}}
 	if !reflect.DeepEqual(config.Permissions, rules) || !reflect.DeepEqual(config.Agents["authored"].Permissions, rules) {
-		t.Fatalf("unexpected permissions: %s", data)
+		t.Fatalf("sandbox tool restrictions remain: %s", data)
 	}
-	for _, action := range []string{"shell", "read", "write", "edit", "opencode", "mcp_resource", "broker_other", "unused_other", "read_diff", "broker_read_diff_extra"} {
-		effect := "ask"
-		for _, rule := range config.Permissions {
-			if rule.Action == "*" || rule.Action == action {
-				effect = rule.Effect
-			}
-		}
-		if effect != "deny" {
-			t.Fatalf("unapproved action %s allowed", action)
-		}
-	}
+
 	for _, forbidden := range []string{"unused.example", `"command"`, `"environment"`, `"client_secret"`, `"enabled"`} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("forbidden MCP config exposed: %s", forbidden)
@@ -222,7 +212,6 @@ func TestMCPStartupValidation(t *testing.T) {
 		"duplicate tool":          strings.Replace(mcpYAML, "fetch.issue", "read_diff", 1),
 		"normalization collision": strings.Replace(mcpYAML, "read_diff, fetch.issue", "fetch.issue, fetch_issue", 1),
 		"cross-server collision":  mcpYAML + "  broker_read:\n    url: https://second.example/mcp\n    tools: [diff]\n",
-		"empty tools":             strings.Replace(mcpYAML, "[read_diff, fetch.issue]", "[]", 1),
 		"header credentials":      strings.Replace(mcpYAML, "    tools: [read_diff", "    headers: {Authorization: secret}\n    tools: [read_diff", 1),
 		"oauth credentials":       strings.Replace(mcpYAML, "    tools: [read_diff", "    oauth: {client_secret: secret}\n    tools: [read_diff", 1),
 		"stdio":                   strings.Replace(mcpYAML, "    url: https://broker.example/mcp", "    command: [sh, -c, evil]", 1),
@@ -322,30 +311,19 @@ func TestMCPSnapshotPinning(t *testing.T) {
 	}
 }
 
-func TestLegacySnapshotDigest(t *testing.T) {
+func TestLegacySnapshotRejectedWithoutWideningPermissions(t *testing.T) {
 	snapshot, err := loaded(t, fixture(t)).Snapshot("reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Reconstruct the pre-base-tag snapshot; fresh deployment files now require the base tag.
-	snapshot.Profile.Tags = []string{"tag:review"}
-	snapshot.Agent.Digest, err = snapshot.digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := snapshot.Definition(); err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Agent.Digest != "fbaa71205ddceaa92966001ac2c129a5345c2ac2cbad12955aa82464a7dc733a" {
-		t.Fatalf("legacy snapshot digest changed: %s", snapshot.Agent.Digest)
-	}
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{`"extends"`, `"mcp"`, `"mcp_servers"`, `"compiled_policy"`} {
-		if strings.Contains(string(data), field) {
-			t.Fatalf("empty new field changes legacy snapshot: %s", field)
+	for _, policy := range []string{"", "opencode-v2.0.26:authored-primary:global-and-agent-deny-all:v1", "opencode-v2.0.26:authored-primary:global-and-agent-exact-mcp:ready-no-title:v2", "opencode-v2.0.26:authored-primary:global-and-agent-broker-mcp:ready-no-title:v3", "opencode-v2.0.26:authored-primary:trusted-skills-and-mcp:v4"} {
+		snapshot.CompiledPolicy = policy
+		snapshot.Agent.Digest, err = snapshot.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := snapshot.Definition(); err == nil || !strings.Contains(err.Error(), "drain old runs") {
+			t.Fatalf("legacy policy %q replayed: %v", policy, err)
 		}
 	}
 }
@@ -416,7 +394,31 @@ func TestMCPDefinitionCopiesAndEmptySelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.MCPServers) != 0 || snapshot.CompiledPolicy != "" || strings.Contains(string(data), `"mcp"`) || strings.Contains(string(data), `"allow"`) || strings.Contains(string(data), `"title"`) {
+	if len(snapshot.MCPServers) != 0 || snapshot.CompiledPolicy != compiledPolicy || strings.Contains(string(data), `"mcp"`) || strings.Contains(string(data), `"title"`) {
 		t.Fatal("empty selection exposed MCP tools")
+	}
+}
+
+func TestMCPConnectionNeedsNoToolAllowlist(t *testing.T) {
+	root := mcpFixture(t)
+	path := filepath.Join(root, "deployment.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, "deployment.yaml", strings.Replace(string(data), "    tools: [read_diff, fetch.issue]\n", "", 1))
+	snapshot, err := loaded(t, root).Snapshot("verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.MCPServers["broker"].Tools) != 0 {
+		t.Fatal("fixture retained tool allowlist")
+	}
+	definition, err := snapshot.Definition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := definition.Config(nil); err != nil {
+		t.Fatal(err)
 	}
 }

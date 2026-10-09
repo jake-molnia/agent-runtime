@@ -131,8 +131,8 @@ computer-use MCP tools operate on the full desktop through AIO.
 The sample profile explicitly sets `SANDBOX_CHROMIUM_SANDBOX=disabled` because
 the restricted container cannot create Chromium's nested sandbox namespaces.
 The Kubernetes sandbox remains the execution isolation boundary. Deployments
-that allow Chromium's own sandbox can set this to `enabled`. The generic sandbox
-image continues to enable it by default. A startup probe gives desktop services
+that allow Chromium's own sandbox can set this to `enabled`. The root-based generic
+OpenCode image also disables Chromium's nested sandbox. A startup probe gives desktop services
 time to start before the worker is considered ready.
 
 The example runs all containers as UID/GID 1000, drops Linux capabilities, and

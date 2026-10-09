@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestDesktopExampleAgentGrants(t *testing.T) {
+func TestDesktopExampleAgentConnections(t *testing.T) {
 	catalog, err := Load(filepath.Join("..", "examples", "definitions"))
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +26,11 @@ func TestDesktopExampleAgentGrants(t *testing.T) {
 				t.Fatal(err)
 			}
 			var config struct {
+				MCP struct {
+					Servers map[string]struct {
+						URL string `json:"url"`
+					} `json:"servers"`
+				} `json:"mcp"`
 				Permissions []permission `json:"permissions"`
 				Agents      map[string]struct {
 					Permissions []permission `json:"permissions"`
@@ -34,20 +39,12 @@ func TestDesktopExampleAgentGrants(t *testing.T) {
 			if err := json.Unmarshal(data, &config); err != nil {
 				t.Fatal(err)
 			}
+			if len(config.MCP.Servers) != 2 || config.MCP.Servers["aio"].URL != "http://127.0.0.1:18091/mcp" || config.MCP.Servers["browser"].URL != "http://127.0.0.1:8931/mcp" {
+				t.Fatalf("desktop connections do not use sandbox-local services: %+v", config.MCP.Servers)
+			}
 			for _, grants := range [][]permission{config.Permissions, config.Agents["authored"].Permissions} {
-				allowed := map[string]bool{}
-				for _, grant := range grants {
-					allowed[grant.Action] = grant.Effect == "allow"
-				}
-				for _, tool := range []string{"aio_sandbox_execute_bash", "aio_sandbox_file_operations", "aio_browser_gui_screenshot", "aio_browser_gui_execute_action", "aio_documents_convert_to_markdown", "browser_browser_navigate", "browser_browser_snapshot", "browser_browser_pdf_save"} {
-					if !allowed[tool] {
-						t.Errorf("example does not grant %s", tool)
-					}
-				}
-				for _, tool := range []string{"*", "shell", "browser_browser_close", "browser_browser_install"} {
-					if allowed[tool] {
-						t.Errorf("example unexpectedly grants %s", tool)
-					}
+				if !reflect.DeepEqual(grants, []permission{{Action: "*", Resource: "*", Effect: "allow"}}) {
+					t.Errorf("desktop connections changed the sandbox harness policy: %+v", grants)
 				}
 			}
 		})

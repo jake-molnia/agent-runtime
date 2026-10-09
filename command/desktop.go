@@ -212,7 +212,7 @@ func runDesktop(ctx context.Context, root string, onReady func([]string)) (err e
 func desktopEnv(root, state string) []string {
 	home := filepath.Join(state, "home")
 	return []string{
-		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "USER=node", "LOGNAME=node", "LANG=C.UTF-8",
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "USER=" + env("USER", "node"), "LOGNAME=" + env("LOGNAME", env("USER", "node")), "LANG=C.UTF-8",
 		"DISPLAY=:99", "XAUTHORITY=" + filepath.Join(state, "Xauthority"),
 		"XDG_RUNTIME_DIR=" + filepath.Join(state, "runtime"), "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"), "XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),

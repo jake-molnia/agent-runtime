@@ -233,12 +233,12 @@ func TestOpenCodeNativeIntegration(t *testing.T) {
 		if err := json.Unmarshal(body, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if len(payload.Tools) != 0 {
-			t.Fatal("native provider advertised tools despite compiled deny-all permissions")
-		}
 		for _, message := range payload.Messages {
 			var text string
 			if message.Role == "system" && json.Unmarshal(message.Content, &text) == nil && strings.Contains(text, agent.Instructions) {
+				if len(payload.Tools) == 0 {
+					t.Fatal("authored provider received no sandbox tools")
+				}
 				if payload.Model != agent.Model.ID {
 					t.Fatalf("native provider ignored pinned model: %q", payload.Model)
 				}
@@ -246,6 +246,9 @@ func TestOpenCodeNativeIntegration(t *testing.T) {
 					if !strings.Contains(text, skill) {
 						t.Fatal("compiled skill missing from native system prompt")
 					}
+				}
+				if !strings.Contains(text, string(agent.Schema)) || !strings.Contains(text, "# Output format") {
+					t.Fatal("pinned schema missing from actual model system message")
 				}
 				foundAuthored = true
 			}

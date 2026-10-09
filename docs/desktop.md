@@ -12,7 +12,7 @@ The generic Hatchet worker image contains no desktop services. The T3 execution
 worker image additionally starts a browser IDE through code-server, as described
 in the [T3 deployment guide](../deploy/t3/README.md). Jupyter is not installed.
 
-The image uses AIO's standalone daemons with our existing non-root Debian image.
+The image uses AIO's standalone daemons with our existing Debian image.
 This keeps the upstream tool implementations while giving `agent-runtime` one
 owner for startup and shutdown. It avoids the prebuilt Computer image's second
 supervisor and bundled applications. Browser, terminal, document, and desktop
@@ -21,7 +21,7 @@ tools still share the same filesystem and display.
 ## Tool connections
 
 The [example deployment](../examples/definitions/deployment.yaml) defines two MCP
-connections with exact tool names:
+connections with documented tool names:
 
 - `aio` exposes shell and code execution, file operations, a text editor,
   environment and package information, skill loading, desktop screenshots,
@@ -36,8 +36,7 @@ Document conversion produces text for the agent to read. Playwright's
 
 The Playwright server enables `vision,pdf,devtools` and attaches to the existing
 Chromium CDP endpoint. Its allowed Host header is `127.0.0.1:8931`, matching the configured
-MCP URL. The example omits `browser_close` because the browser session belongs to
-the runtime. Keep at least one browser window open when using desktop actions or
+MCP URL. The browser session belongs to the runtime. Keep at least one browser window open when using desktop actions or
 `browser_tabs`; closing the last window can end the supervised browser process.
 
 Both MCP servers operate on the same desktop state. A browser navigation appears
@@ -52,10 +51,11 @@ those same connections in `agents/<name>/agent.yaml`. The overrides retain the
 built-in agent instructions and add a short sandbox skill. Embedded built-ins
 remain tool-free when used without these overrides.
 
-Deployment grants and agent selections are both required. The compiler grants
-the listed tools individually at global and agent scope, after a default deny
-rule. Adding a server to the registry alone gives an agent no tools. Removing a
-connection from an agent's `mcp` list removes its tools from that agent's session.
+Deployment connection grants and agent selections are both required. The generic
+OpenCode harness uses the repository's unrestricted tool policy. Legacy tool
+lists document expected capabilities but do not restrict a selected server's
+catalog. Adding a server to the registry alone does not select it for an agent.
+Removing a connection from an agent's `mcp` list removes that connection from its session.
 See the [MCP grant reference](../definitions/README.md#remote-mcp-grants).
 
 These connections grant broad control inside the sandbox. Shell execution,
@@ -88,7 +88,8 @@ user authentication and are not public service ports.
 ## Lifecycle and verification
 
 `agent-runtime serve` owns desktop startup and shutdown alongside `sandboxd` and
-OpenCode. Services run as the sandbox's unprivileged user. Desktop readiness
+OpenCode. The generic OpenCode sandbox follows the repository's root-harness
+configuration, while the T3 execution worker runs as UID 1000. Desktop readiness
 contributes to the existing supervisor `/health` endpoint. Required service exit
 fails the runtime instead of leaving a healthy-looking partial desktop.
 

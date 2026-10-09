@@ -19,7 +19,7 @@ func TestIntegrationStrictConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := LoadIntegration(path)
-		if (err == nil) != (suffix == "") {
+		if (err == nil) != (suffix == "" || strings.HasPrefix(suffix, "native_events:")) {
 			t.Fatalf("suffix %q: %v", suffix, err)
 		}
 	}

@@ -455,3 +455,19 @@ func TestCaptureOwnsManifestAndYAMLShape(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveInputCombinesNearLimitReviewReports(t *testing.T) {
+	for _, character := range []string{"x", "<"} {
+		t.Run(character, func(t *testing.T) {
+			report := json.RawMessage(`{"summary":"` + strings.Repeat(character, (1<<20)-100) + `","findings":[],"limitations":"none"}`)
+			got, err := ResolveInput(Step{Input: InputRefs{Sources: []string{"verify", "adversarial"}, Multiple: true}}, nil, map[string]json.RawMessage{"verify": report, "adversarial": report})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reports []json.RawMessage
+			if err = json.Unmarshal(got, &reports); err != nil || len(reports) != 2 || !bytes.Equal(reports[0], report) || !bytes.Equal(reports[1], report) {
+				t.Fatalf("changed reports: %v", err)
+			}
+		})
+	}
+}
