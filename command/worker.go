@@ -12,6 +12,7 @@ import (
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/artifacts"
+	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/hatchetbridge"
 	"github.com/jake-molnia/agent-runtime/messages"
 	"github.com/jake-molnia/agent-runtime/orchestration"
@@ -104,6 +105,11 @@ func worker(ctx context.Context) error {
 		return err
 	}
 	defer client.Close(context.Background())
+	reviewConfig, reviewsEnabled, err := optionalReviewConfig()
+	if err != nil {
+		return err
+	}
+	var reviewChild *hatchet.Workflow
 	registered := make([]hatchet.WorkflowBase, 0, len(plans))
 	for _, plan := range plans {
 		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan)
@@ -111,12 +117,39 @@ func worker(ctx context.Context) error {
 			return err
 		}
 		registered = append(registered, workflow)
+		if reviewsEnabled && plan.Workflow.Name == reviewConfig.Workflow {
+			reviewChild = workflow
+		}
+	}
+	var webhook http.Handler
+	labels := map[string]any{}
+	if reviewsEnabled {
+		if reviewChild == nil {
+			return errors.New("configured review workflow missing")
+		}
+		handler, closeReview, err := reviewHandler(ctx, reviewConfig)
+		if err != nil {
+			return err
+		}
+		defer closeReview()
+		adapter, err := hatchetbridge.RegisterReview(client, reviewConfig, func() (githubreview.Integration, error) { return githubreview.LoadIntegration(reviewConfigPath()) }, handler, reviewChild, plans[reviewConfig.Workflow], engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")})
+		if err != nil {
+			return err
+		}
+		registered = append(registered, adapter)
+		webhook, err = reviewWebhook(reviewConfig, adapter)
+		if err != nil {
+			return err
+		}
+		for k, v := range reviewConfig.WorkerLabels {
+			labels[k] = v
+		}
 	}
 	slots, err := strconv.Atoi(env("AGENT_WORKER_SLOTS", "4"))
 	if err != nil || slots < 1 {
 		return errors.New("invalid worker slots")
 	}
-	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(registered...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots))
+	worker, err := client.NewWorker(env("AGENT_WORKER_NAME", "agent-runtime"), hatchet.WithWorkflows(registered...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots), hatchet.WithLabels(labels))
 	if err != nil {
 		return err
 	}
@@ -127,6 +160,9 @@ func worker(ctx context.Context) error {
 	worker.Use(instrument.Middleware())
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", tel.Handler)
+	if webhook != nil {
+		mux.Handle("/webhooks/github", webhook)
+	}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
 	g, ctx := errgroup.WithContext(workerCtx)

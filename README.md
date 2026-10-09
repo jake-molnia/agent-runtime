@@ -51,5 +51,10 @@ task returns the selected output value and its immutable message reference.
 
 Read [setup and ownership](docs/agent-automations.md),
 [defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).
-GitHub remains an optional adapter library; no GitHub identity, workflow or secret
-configuration is required to use the runtime.
+GitHub review automation is an [optional trusted integration](docs/github-review.md);
+no GitHub identity, workflow or secret configuration is required for generic workers.
+The images include [pinned engineering skills](docs/sandbox-skills.md).
+
+See [container releases](docs/releases.md) for versioned and nightly GHCR images,
+and [config worker replacement](docs/config-runtime-replacement.md) for the current
+integration and deployment gaps.
