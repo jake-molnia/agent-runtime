@@ -124,7 +124,7 @@ and GHCR images, including the pinned skill bundle. It has no Depot dependency.
 Use a separate workflow name and pool for staging. Revision-specific action
 names prevent old tasks from landing on new incompatible workers. Retain old
 workers until their runs drain; referenced snapshots, messages, and compatible
-skill images must remain available. The v5 unrestricted compiler migration itself
+skill images must remain available. The v6 checked-in harness configuration migration itself
 requires draining older compiler-policy runs with their original worker.
 Test durable child cancellation/replay and TTL idempotency against your deployed
 Hatchet version before cutting over. Unit tests cover SDK callback execution and

@@ -67,7 +67,7 @@ retention, and claim cleanup. Exercise durable child cancellation and worker
 placement against the actual Hatchet server. Do not infer compatibility solely
 from SDK callback tests.
 
-Drain old Python `pr-review` runs, including the legacy `judge` alias. Pre-v5
+Drain old Python `pr-review` runs, including the legacy `judge` alias. Pre-v6
 runtime snapshots must also drain with their original compiler/worker; they do
 not silently gain unrestricted permissions. Retain old revision-specific workers
 until their remaining runs finish, along with their snapshots, messages, and
