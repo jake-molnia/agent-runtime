@@ -52,6 +52,15 @@ func (c *Controller) gateway() http.Handler {
 				p.Out.URL.RawPath = ""
 				p.Out.Host = target.Host
 				p.Out.Header.Del("Cookie")
+				// The authenticated central IDE proxy supplies the browser origin.
+				// ReverseProxy strips these before Rewrite; code-server needs them.
+				if strings.HasPrefix(path, "v1/ide/") {
+					for _, name := range []string{"X-Forwarded-Host", "X-Forwarded-Proto"} {
+						if value := p.In.Header.Get(name); value != "" {
+							p.Out.Header.Set(name, value)
+						}
+					}
+				}
 			},
 			FlushInterval: -1,
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {

@@ -59,6 +59,10 @@
               {
                 "name": "T3_GIT_CREDENTIALS_FILE",
                 "value": "/etc/t3-scm/credentials.json"
+              },
+              {
+                "name": "SANDBOX_CHROMIUM_SANDBOX",
+                "value": "disabled"
               }
             ],
             "envFrom": [
@@ -120,6 +124,13 @@
               },
               "initialDelaySeconds": 3,
               "periodSeconds": 5
+            },
+            "startupProbe": {
+              "tcpSocket": {
+                "port": "execution"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60
             }
           }
         ],

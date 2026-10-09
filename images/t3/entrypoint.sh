@@ -9,4 +9,4 @@ for directory in "$HOME/.agents" "$HOME/.claude"; do
     fi
 done
 /usr/local/bin/t3-configure-git
-exec node /opt/t3/dist/execution-worker.mjs
+exec agent-runtime t3-session

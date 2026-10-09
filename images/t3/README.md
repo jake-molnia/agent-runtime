@@ -64,6 +64,14 @@ Azure CLI uses Microsoft's checksum-pinned Debian package with its bundled
 Python. The Azure DevOps wheel is pinned separately, and dynamic extension
 installation is disabled.
 
+The T3 worker also includes code-server `4.141.0`, AIO `0.9.2`, and the shared
+desktop tool installation from `desktop/install-tools.sh`. Code-server release
+archives are checked against fixed SHA-256 hashes by `install-code-server.sh`.
+The Go `t3-session` supervisor starts these services on loopback, then launches
+the TypeScript execution worker with their addresses and desktop environment.
+The real-entrypoint image smoke checks verify the IDE HTML, computer API, and
+browser CDP endpoint before accepting the worker as ready. Jupyter is excluded.
+
 ## Check the Git credential helper
 
 ```sh

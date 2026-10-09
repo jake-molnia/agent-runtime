@@ -37,6 +37,7 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 		builtinSkills   bool
 	}{
 		{"exact_allowed", "broker_publish_comment", false, false},
+		{"screenshot", "broker_screenshot", false, false},
 		{"legacy_list_does_not_restrict", "broker_dangerous_tool", false, false},
 		{"catalog_new", "broker_new_tool", true, false},
 		{"catalog_revoked", "broker_revoked_tool", true, false},
@@ -52,6 +53,12 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			attempted := scenario.attempted
+			approved := "publish_comment"
+			if scenario.name == "screenshot" {
+				approved = "screenshot"
+			}
+			const screenshotPNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGOQtYz5D8IMMAYAN2QGxaTMsjUAAAAASUVORK5CYII="
+			const screenshotText = "desktop screenshot transport marker"
 			skillDirectory := os.Getenv("AGENT_RUNTIME_TEST_SKILLS_DIRECTORY")
 			if scenario.builtinSkills && skillDirectory == "" {
 				t.Skip("set AGENT_RUNTIME_TEST_SKILLS_DIRECTORY to installed pinned skill catalog")
@@ -71,6 +78,7 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			var advertised [][]string
 			var observedProviderBodies []string
 			unusedRequests := 0
+			imageReachedProvider, imageTextReachedProvider := false, false
 			broker := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.Method != "POST" {
 					writer.WriteHeader(405)
@@ -104,12 +112,22 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 					result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "fake-broker", "version": "1"}}
 				case "tools/list":
 					tools := []any{}
-					for _, name := range []string{"publish_comment", "dangerous_tool", "new_tool", "revoked_tool"} {
+					names := []string{"publish_comment", "dangerous_tool", "new_tool", "revoked_tool"}
+					if scenario.name == "screenshot" {
+						names = append(names, "screenshot")
+					}
+					for _, name := range names {
 						tools = append(tools, map[string]any{"name": name, "description": name, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}})
 					}
 					result = map[string]any{"tools": tools}
 				case "tools/call":
 					result = map[string]any{"content": []any{map[string]string{"type": "text", "text": "broker called"}}}
+					if rpc.Params.Name == "screenshot" {
+						result = map[string]any{"content": []any{
+							map[string]string{"type": "text", "text": screenshotText},
+							map[string]string{"type": "image", "mimeType": "image/png", "data": screenshotPNG},
+						}}
+					}
 					if rpc.Params.Name == "revoked_tool" {
 						result = map[string]any{"isError": true, "content": []any{map[string]string{"type": "text", "text": "broker policy revoked"}}}
 					}
@@ -133,6 +151,9 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			provider := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, 1<<20))
 				var payload struct {
+					Messages []struct {
+						Content json.RawMessage `json:"content"`
+					} `json:"messages"`
 					Tools []struct {
 						Function struct {
 							Name string `json:"name"`
@@ -158,6 +179,30 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 				observedProviderBodies = append(observedProviderBodies, string(body))
 				round := len(advertised)
 				first := round == 1 || (scenario.name == "repeated_shell" && round <= 5)
+				if scenario.name == "screenshot" && !first {
+					for _, message := range payload.Messages {
+						var plain string
+						if json.Unmarshal(message.Content, &plain) == nil {
+							imageTextReachedProvider = imageTextReachedProvider || strings.Contains(plain, screenshotText)
+							continue
+						}
+						var parts []struct {
+							Type     string `json:"type"`
+							Text     string `json:"text"`
+							ImageURL struct {
+								URL string `json:"url"`
+							} `json:"image_url"`
+						}
+						if err := json.Unmarshal(message.Content, &parts); err != nil {
+							t.Errorf("invalid provider message content: %s", message.Content)
+							continue
+						}
+						for _, part := range parts {
+							imageReachedProvider = imageReachedProvider || part.Type == "image_url" && part.ImageURL.URL == "data:image/png;base64,"+screenshotPNG
+							imageTextReachedProvider = imageTextReachedProvider || part.Type == "text" && strings.Contains(part.Text, screenshotText)
+						}
+					}
+				}
 				mutex.Unlock()
 				writer.Header().Set("Content-Type", "text/event-stream")
 				delta := map[string]any{"role": "assistant"}
@@ -222,7 +267,7 @@ defaults:
 mcp_servers:
   broker:
     url: %q
-    tools: [publish_comment]
+    tools: [%s]
   unused:
     url: %q
     tools: [dangerous_tool]
@@ -241,9 +286,9 @@ profiles:
           settings: {baseURL: %q}
           models:
             json:
-              capabilities: {tools: true, input: [text], output: [text]}
+              capabilities: {tools: true, input: [text, image], output: [text]}
               limit: {context: 32000, output: 2048}
-`, broker.URL, unused.URL, workspace, secretFile, provider.URL+"/v1")
+`, broker.URL, approved, unused.URL, workspace, secretFile, provider.URL+"/v1")
 			if scenario.brokerCatalog {
 				fixture = strings.Replace(fixture, "tools: [publish_comment]", "tool_policy: broker_catalog", 1)
 			}
@@ -357,6 +402,14 @@ profiles:
 				}
 				if strings.HasPrefix(attempted, "broker_") && calls[strings.TrimPrefix(attempted, "broker_")] != 1 {
 					t.Error("selected broker tool did not execute exactly once")
+				}
+				if scenario.name == "screenshot" {
+					if !imageReachedProvider {
+						t.Error("MCP PNG image did not reach the model as an image_url data URI")
+					}
+					if !imageTextReachedProvider {
+						t.Error("MCP screenshot text did not reach the model alongside its image")
+					}
 				}
 				if attempted == "shell" || attempted == "write" {
 					if _, err := os.Stat(filepath.Join(workspace, "native-write")); err != nil {

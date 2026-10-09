@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jake-molnia/agent-runtime/sandbox"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -129,5 +130,67 @@ func TestPoolCredentialsAreIsolated(t *testing.T) {
 	c.PoolID = "portal"
 	if a == c.token("workspace", 1) {
 		t.Fatal("cross-pool token")
+	}
+}
+
+func TestGatewayIDEWebSocketPreservesForwardedOriginAndIdentity(t *testing.T) {
+	c, api, _ := fixture(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for name, want := range map[string]string{"X-Forwarded-Host": "session.ide.example", "X-Forwarded-Proto": "https", "X-Forwarded-Prefix": "/api/sandbox-ide/session", "X-T3-Ide-Identity": "identity-proof", "Origin": "https://session.ide.example"} {
+			if r.Header.Get(name) != want {
+				t.Errorf("%s was lost: %q", name, r.Header.Get(name))
+				http.Error(w, "missing IDE context", 400)
+				return
+			}
+		}
+		if r.URL.RequestURI() != "/v1/ide/?reconnectionToken=proof" {
+			t.Errorf("IDE route changed: %s", r.URL)
+			return
+		}
+		connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"session.ide.example"}, Subprotocols: []string{"t3-proof"}})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer connection.CloseNow()
+		kind, data, err := connection.Read(r.Context())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err = connection.Write(r.Context(), kind, data); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	port, _ := strconv.Atoi(u.Port())
+	p := c.Profiles["default"]
+	p.Port = port
+	c.Profiles["default"] = p
+	state := run(t, c, request(1, EnsureRunning))
+	obj, _ := api.Tracker().Get(sandbox.Sandboxes, "test", state.Handle.Sandbox)
+	raw := obj.(*unstructured.Unstructured)
+	unstructured.SetNestedField(raw.Object, u.Hostname(), "status", "serviceFQDN")
+	api.Tracker().Update(sandbox.Sandboxes, raw, "test")
+	gateway := httptest.NewServer(Handler(c, &fakeTasks{}, "control"))
+	defer gateway.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	headers := http.Header{"Authorization": []string{"Bearer " + c.token(state.Request.WorkspaceID, state.Epoch)}, "X-Forwarded-Host": []string{"session.ide.example"}, "X-Forwarded-Proto": []string{"https"}, "X-Forwarded-Prefix": []string{"/api/sandbox-ide/session"}, "X-T3-Ide-Identity": []string{"identity-proof"}, "Origin": []string{"https://session.ide.example"}}
+	connection, _, err := websocket.Dial(ctx, gateway.URL+executionURL("", "default", state.Request.WorkspaceID)+"/v1/ide/?reconnectionToken=proof", &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{"t3-proof"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	if connection.Subprotocol() != "t3-proof" {
+		t.Fatal("upgrade subprotocol lost")
+	}
+	if err = connection.Write(ctx, websocket.MessageText, []byte("IDE duplex proof")); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := connection.Read(ctx)
+	if err != nil || string(data) != "IDE duplex proof" {
+		t.Fatalf("IDE stream: %q %v", data, err)
 	}
 }
