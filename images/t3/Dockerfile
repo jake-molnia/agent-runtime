@@ -17,6 +17,8 @@ WORKDIR /src/t3
 COPY --from=t3src . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter t3 build:bundle
+FROM worker-build AS worker-package
+# Deploy changes pnpm workspace state; keep it separate from the web build.
 # pnpm preserves the locked, patched native dependency closure in a portable package.
 RUN pnpm --filter t3 deploy --prod --legacy /out/worker
 COPY --from=t3src LICENSE /out/worker/LICENSE
@@ -41,7 +43,7 @@ RUN test "$TARGETARCH" = amd64 \
     && mkdir -p /workspace && chown node:node /workspace
 COPY --from=runtime-build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=runtime-build /usr/local/go /usr/local/go
-COPY --from=worker-build /out/worker /opt/t3
+COPY --from=worker-package /out/worker /opt/t3
 COPY --from=harnesses /opt/harnesses /opt/harnesses
 COPY --from=harnesses /opt/opencode2 /opt/opencode2
 COPY --from=harnesses /opt/native/bin /opt/native/bin
@@ -79,7 +81,7 @@ FROM node:26.9.0-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bd
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini python3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /data && chown node:node /data
-COPY --from=worker-build /out/worker /opt/t3
+COPY --from=worker-package /out/worker /opt/t3
 COPY --from=web-build /src/t3/apps/web/dist /opt/t3/dist/client
 COPY images/t3/smoke-web.py /opt/t3/
 ENV HOME=/data T3CODE_HOME=/data/t3

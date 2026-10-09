@@ -25,6 +25,13 @@ compute retains the workspace PVC. Do not add a `workspace` volume definition to
 the profile; the controller supplies it. The worker's home and journal are
 inside that retained volume. Conversation SQLite stays on the central volume.
 
+Suspension shuts down worker processes; it does not freeze their memory. Idle
+conversations suspend after `T3_SANDBOX_IDLE_MS`, which defaults to five minutes.
+Pending provider approvals or input callbacks, active delegated work, and running
+subprocesses keep the workspace alive until they can stop safely. Settling a
+conversation releases compute after its cleanup finishes. Both paths retain the
+workspace PVC so later activity can start a new worker against the same files.
+
 ## Supply credentials
 
 Create these Kubernetes Secrets through your existing secret-management process.
