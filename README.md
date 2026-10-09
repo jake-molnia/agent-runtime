@@ -5,6 +5,10 @@ sandboxes, native OpenCode V2 sessions, and immutable typed message handoffs.
 It ships generic `code-review`, `verify`, and `adversarial-review` agent defaults.
 It does not ship or register production workflows.
 
+OpenCode V2 is the only supported agent harness. The sandbox installs the upstream
+`@opencode/cli` package pinned to 2.0.26 and exposes its `opencode` executable on
+`PATH`. `OPENCODE_BINARY` can select another path to an OpenCode V2 binary.
+
 ## Author a workflow
 
 Place this in your configuration directory as `workflows/review-change.yaml`:

@@ -175,6 +175,9 @@ func Load(root string, catalog *definitions.Catalog) (map[string]Snapshot, error
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("symlink forbidden: %s", path)
 		}
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), ".snapshot-") {
+			continue
+		}
 		if strings.HasSuffix(entry.Name(), ".json") && validDigest(strings.TrimSuffix(entry.Name(), ".json")) {
 			if _, err := Read(root, strings.TrimSuffix(entry.Name(), ".json")); err != nil {
 				return nil, err
