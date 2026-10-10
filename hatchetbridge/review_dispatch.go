@@ -62,9 +62,6 @@ func RegisterReviewIngress(client *hatchet.Client, config githubreview.Integrati
 }
 
 func runReviewChild(ctx hatchet.DurableContext, client *hatchet.Client, child *hatchet.Workflow, input any, labels map[string]*hatchet.DesiredWorkerLabel) (*hatchet.WorkflowResult, error) {
-	if err := releaseReviewParentSlot(ctx); err != nil {
-		return nil, err
-	}
 	ref, err := child.RunNoWait(ctx, input, hatchet.WithDesiredWorkerLabels(labels))
 	if err != nil {
 		return nil, err
@@ -98,18 +95,3 @@ func awaitChild(ctx context.Context, result func() (*hatchet.WorkflowResult, err
 	defer finish()
 	return nil, errors.Join(context.Cause(ctx), cancel(cleanup))
 }
-
-// The parent stays alive to enforce review cancellation while its child runs.
-// Explicit slot release avoids capacity deadlock without cancelling the parent
-// context, which this review guard reserves for cancellation of the child too.
-func releaseReviewParentSlot(ctx interface{ ReleaseSlot() error }) error {
-	if err := ctx.ReleaseSlot(); err != nil {
-		return reviewParentSlotError{cause: err}
-	}
-	return nil
-}
-
-type reviewParentSlotError struct{ cause error }
-
-func (e reviewParentSlotError) Error() string { return "could not release review parent slot" }
-func (e reviewParentSlotError) Unwrap() error { return e.cause }

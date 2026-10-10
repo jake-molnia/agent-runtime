@@ -152,7 +152,11 @@ type backendError struct {
 func (err backendError) Error() string {
 	var provision *orchestration.ProvisionError
 	if err.operation == "provision" && errors.As(err.cause, &provision) {
-		return "agent provision failed during " + provision.Phase()
+		message := "agent provision failed during " + provision.Phase()
+		if detail := provision.Diagnostic(); detail != "" {
+			message += ": " + detail
+		}
+		return message
 	}
 	return "agent " + err.operation + " failed"
 }

@@ -115,7 +115,7 @@ func TestReviewRegistration(t *testing.T) {
 		t.Fatalf("incorrect adapter graph %+v", declaration)
 	}
 	if durable[0].EvictionPolicy != nil {
-		t.Fatal("review parent must retain its cancellation guard after manual slot release")
+		t.Fatal("review parent must retain its cancellation guard on its dedicated worker tier")
 	}
 	ingress, err := RegisterReviewIngress(offlineLifecycleClient(t), config, workflow, fixture.plan.Digest, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{})
 	if err != nil {
@@ -126,7 +126,7 @@ func TestReviewRegistration(t *testing.T) {
 		t.Fatalf("invalid ingress %+v", declaration)
 	}
 	if durable[0].EvictionPolicy != nil {
-		t.Fatal("ingress parent must retain its cancellation guard after manual slot release")
+		t.Fatal("ingress parent must retain its cancellation guard on its dedicated worker tier")
 	}
 	raw, err := json.Marshal(declaration)
 	if err != nil {

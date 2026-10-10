@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/jake-molnia/agent-runtime/opencode"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -32,5 +35,26 @@ func TestProvisionPreservesClaimFailureWithoutPublishingItsPayload(t *testing.T)
 	}
 	if strings.Contains(err.Error(), "credential") || err.Error() != "provision claim failed" {
 		t.Fatal("private claim diagnostic exposed")
+	}
+}
+
+func TestProvisionMCPDiagnosticContainsOnlyFiniteReadinessDetails(t *testing.T) {
+	client, err := opencode.New("http://private-runtime.invalid", nil, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 403, Body: io.NopCloser(strings.NewReader("private-token-and-provider-response"))}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := client.ReadyMCP(t.Context(), "/workspace", []string{"aperture"})
+	failure := provisionFailure("mcp", cause)
+	var phase *ProvisionError
+	if !errors.As(failure, &phase) {
+		t.Fatal("phase missing")
+	}
+	if !strings.Contains(phase.Diagnostic(), "server aperture") || !strings.Contains(phase.Diagnostic(), "http=403") || strings.Contains(phase.Diagnostic(), "private") {
+		t.Fatal("readiness diagnostic leaked or lost safe details")
+	}
+	if !errors.Is(failure, cause) {
+		t.Fatal("underlying readiness cause discarded")
 	}
 }

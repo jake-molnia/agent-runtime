@@ -491,3 +491,11 @@ func provisionFailure(phase string, err error) error {
 	}
 	return &ProvisionError{phase: phase, cause: err}
 }
+
+func (e *ProvisionError) Diagnostic() string {
+	var mcp *opencode.MCPReadinessError
+	if e.phase == "mcp" && errors.As(e.cause, &mcp) {
+		return mcp.Error()
+	}
+	return ""
+}
