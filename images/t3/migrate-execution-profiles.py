@@ -136,7 +136,19 @@ def migrate_controller(pool, entry, persist, source, target, timeout):
             if not current.get('identity') or not current.get('handle'):
                 raise MigrationError('workspace has no stable allocation to release')
             if current.get('completedOperation') != current['request']['operationId']:
-                raise MigrationError('workspace has an unfinished lifecycle operation')
+                task_id = current.get('taskId')
+                if not task_id:
+                    raise MigrationError('unfinished lifecycle operation has no authoritative task')
+                task_code, task = request(pool, '/v1/operations/' + urllib.parse.quote(task_id, safe=''))
+                if task_code != 200 or task['status'] not in ('FAILED', 'CANCELLED'):
+                    raise MigrationError('unfinished lifecycle operation is not authoritatively terminal')
+                code, confirmed = state(pool, workspace, source)
+                if code != 200 or confirmed != current:
+                    raise MigrationError('unfinished lifecycle operation changed during inspection')
+                entry['releaseAttempts'] = [{
+                    'request': json.loads(json.dumps(current['request'])),
+                    'taskId': task_id, 'status': task['status'], 'owned': False,
+                }]
             entry['releaseBasis'] = json.loads(json.dumps(current))
             revision = max(entry['before']['admission_revision'], current['request']['revision']) + 1
             entry['release'] = {

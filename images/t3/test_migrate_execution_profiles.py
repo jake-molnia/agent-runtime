@@ -112,6 +112,76 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(entry['releaseAttempts'][0]['status'],terminal)
                 self.assertEqual(entry['releaseAttempts'][0]['request'],submissions[0])
 
+    def test_terminal_preexisting_lifecycle_recovers_without_forcing_quiescence(self):
+        for status in ('FAILED', 'CANCELLED'):
+            with self.subTest(status=status):
+                current={'request':{'workspaceId':'w','revision':40,'operationId':'existing-idle-release','profile':'v1','action':'release_compute'},
+                    'taskId':'previous','epoch':4,'profileHash':'original','phase':'running',
+                    'completedOperation':'older-ensure', 'identity':{'incarnation':'one'},
+                    'handle':{'allocationId':'4','pvcUid':'retained'}}
+                entry={'before':{'workspace_id':'w','admission_revision':35}}
+                posts=[]
+                def request(pool,path,body=None):
+                    if path.startswith('/v1/workspaces/'):
+                        return 200,{'state':json.loads(json.dumps(current))}
+                    if path == '/v1/operations/previous':
+                        return 200,{'status':status}
+                    if path == '/v1/operations':
+                        posts.append(json.loads(json.dumps(body)))
+                        self.assertEqual(body['action'],'release_compute')
+                        self.assertEqual(body['expectedAllocationId'],'4')
+                        self.assertEqual(body['expectedIncarnation'],'one')
+                        self.assertEqual(body['expectedGeneration'],4)
+                        current.update(request=json.loads(json.dumps(body)),completedOperation=body['operationId'],
+                            phase='released',identity=None,handle=None,taskId='migration')
+                        return 202,{'taskId':'migration'}
+                    if path == '/v1/profile-migrations':
+                        current['request']['profile']='v2'
+                        return 200,current
+                    self.fail(path)
+                persisted=[]
+                def crash_before_post():
+                    persisted.append(json.loads(json.dumps(entry)))
+                    raise migration.MigrationError('crash after preparing recovery')
+                with patch.object(migration,'request',request):
+                    with self.assertRaises(migration.MigrationError):
+                        migration.migrate_controller({},entry,crash_before_post,'v1','v2',1)
+                    self.assertEqual(posts,[])
+                    entry=persisted[-1]
+                    planned=json.loads(json.dumps(entry['release']))
+                    revision=migration.migrate_controller({},entry,lambda:None,'v1','v2',1)
+                self.assertEqual(revision,41)
+                self.assertEqual(posts,[planned])
+                self.assertFalse(entry['releaseAttempts'][0]['owned'])
+
+    def test_preexisting_operation_requires_terminal_status_and_stable_state(self):
+        for scenario in ('RUNNING','QUEUED','SUCCEEDED','unknown','profile','identity','storage','revision'):
+            with self.subTest(scenario=scenario):
+                current={'request':{'workspaceId':'w','revision':40,'operationId':'existing','profile':'v1'},
+                    'taskId':'previous','epoch':4,'profileHash':'original','phase':'running',
+                    'completedOperation':'older','identity':{'incarnation':'one'},'handle':{'allocationId':'4','pvcUid':'same'}}
+                confirmed=json.loads(json.dumps(current))
+                if scenario=='profile': confirmed['profileHash']='changed'
+                if scenario=='identity': confirmed['identity']['incarnation']='changed'
+                if scenario=='storage': confirmed['handle']['pvcUid']='changed'
+                if scenario=='revision': confirmed['request']['revision']=41
+                reads=0
+                def request(pool,path,body=None):
+                    nonlocal reads
+                    self.assertIsNone(body,'must not mutate unknown or changed preexisting operation')
+                    if path.startswith('/v1/workspaces/'):
+                        reads+=1
+                        return 200,{'state':json.loads(json.dumps(current if reads==1 else confirmed))}
+                    if path == '/v1/operations/previous':
+                        if scenario=='unknown': return 503,None
+                        return 200,{'status':scenario if scenario in ('RUNNING','QUEUED','SUCCEEDED') else 'FAILED'}
+                    self.fail(path)
+                entry={'before':{'workspace_id':'w','admission_revision':35}}
+                with patch.object(migration,'request',request):
+                    with self.assertRaises(migration.MigrationError):
+                        migration.migrate_controller({},entry,lambda:None,'v1','v2',1)
+                self.assertNotIn('release',entry)
+
     def test_saved_replacement_rechecks_predecessor_before_post(self):
         for change in ('superseded','identity','storage','profile','running','unknown'):
             with self.subTest(change=change):
