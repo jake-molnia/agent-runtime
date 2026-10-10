@@ -1,4 +1,4 @@
-// Package packs creates editable single-agent workflow starters.
+// Package packs creates task starters and references to runtime-owned workflow packs.
 package packs
 
 import (
@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jake-molnia/agent-runtime/definitions"
@@ -16,51 +17,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed briefs/*.txt
+//go:embed briefs/*.md
 var briefs embed.FS
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 func Names() []string {
-	return definitions.BuiltinNames()
+	names := []string{}
+	for _, name := range definitions.BuiltinNames() {
+		if _, err := briefs.ReadFile("briefs/" + name + ".md"); err == nil {
+			names = append(names, name)
+		}
+	}
+	return append(names, workflows.PresetNames()...)
 }
 
 // Write creates a starter without replacing an existing workflow or deployment.
 func Write(root, preset, name string) (string, error) {
-	agent, exists := definitions.Builtin(preset)
-	if !exists {
-		return "", fmt.Errorf("unknown preset: %s", preset)
-	}
 	if !validName.MatchString(name) {
 		return "", fmt.Errorf("invalid workflow name: %q", name)
 	}
-	brief, err := briefs.ReadFile("briefs/" + preset + ".txt")
-	if err != nil {
-		return "", fmt.Errorf("preset brief: %w", err)
-	}
-	var schema struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-	}
-	if err := json.Unmarshal(agent.Schema, &schema); err != nil {
-		return "", err
-	}
-	_, notebook := schema.Properties["notebook"]
-	wire := struct {
-		Version  int                       `yaml:"version"`
-		Input    map[string]string         `yaml:"input"`
-		Notebook bool                      `yaml:"notebook,omitempty"`
-		Steps    map[string]workflows.Step `yaml:"steps"`
-		Output   string                    `yaml:"output"`
-	}{
-		Version: 1, Input: map[string]string{"brief": strings.TrimSpace(string(brief))}, Notebook: notebook,
-		Steps:  map[string]workflows.Step{"work": {Agent: preset, Input: workflows.InputRefs{Sources: []string{"input"}}}},
-		Output: "work",
-	}
-	data, err := yaml.Marshal(wire)
+	data, err := starter(preset)
 	if err != nil {
 		return "", err
 	}
-	data = append([]byte("# Edit the brief and configure the agent's approved tools before running.\n# Optional schedule, disabled until uncommented:\n# schedule:\n#   cron: '0 8 * * *'\n#   timezone: UTC\n"), data...)
 	directory, err := prepareDirectory(root)
 	if err != nil {
 		return "", err
@@ -96,6 +76,44 @@ func Write(root, preset, name string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func starter(preset string) ([]byte, error) {
+	if slices.Contains(workflows.PresetNames(), preset) {
+		return []byte("# Instructions, schemas, and review stages are bundled in agent-runtime.\n# Supply the pinned PR task with --input; configure models/tools in deployment settings.\nuse: " + preset + "\n"), nil
+	}
+	agent, exists := definitions.Builtin(preset)
+	if !exists {
+		return nil, fmt.Errorf("unknown preset: %s", preset)
+	}
+	brief, err := briefs.ReadFile("briefs/" + preset + ".md")
+	if err != nil {
+		return nil, fmt.Errorf("preset brief: %w", err)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(agent.Schema, &schema); err != nil {
+		return nil, err
+	}
+	_, notebook := schema.Properties["notebook"]
+	wire := struct {
+		Version  int                       `yaml:"version"`
+		Input    map[string]string         `yaml:"input"`
+		Notebook bool                      `yaml:"notebook,omitempty"`
+		Steps    map[string]workflows.Step `yaml:"steps"`
+		Output   string                    `yaml:"output"`
+	}{
+		Version: 1, Input: map[string]string{"brief": strings.TrimSpace(string(brief))}, Notebook: notebook,
+		Steps:  map[string]workflows.Step{"work": {Agent: preset, Input: workflows.InputRefs{Sources: []string{"input"}}}},
+		Output: "work",
+	}
+	data, err := yaml.Marshal(wire)
+	if err != nil {
+		return nil, err
+	}
+	data = append([]byte("# Edit the brief and configure the agent's approved tools before running.\n# Optional schedule, disabled until uncommented:\n# schedule:\n#   cron: '0 8 * * *'\n#   timezone: UTC\n"), data...)
+	return data, nil
 }
 
 func prepareDirectory(root string) (string, error) {

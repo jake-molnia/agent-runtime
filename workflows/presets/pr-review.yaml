@@ -1,0 +1,9 @@
+steps:
+  review: {agent: pr-reviewer, input: input}
+  adversarial: {agent: pr-adversarial, input: input}
+  security: {agent: pr-security, input: input}
+  dependencies: {agent: pr-dependencies, input: input}
+  verify: {agent: pr-verifier, input: [input, review, adversarial, security, dependencies]}
+  triage: {agent: pr-triager, input: [input, verify]}
+  writeup: {agent: pr-writer, input: [input, verify, triage]}
+output: writeup

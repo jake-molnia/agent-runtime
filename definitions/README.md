@@ -83,7 +83,7 @@ They contain no model, execution profile, path, tool grants, or workflow pipelin
 The instructions operate on supplied input and require evidence for conclusions.
 
 When deployment `defaults` is present, the catalog resolves and snapshots all
-16 built-ins. Its model and execution fields also supply omitted settings for
+23 built-ins. Its model and execution fields also supply omitted settings for
 authored agents. Without `defaults`, legacy explicit packages load as before;
 built-ins are not automatically registered. A referenced inherited agent must
 still resolve a model, profile, and valid timeout.
@@ -101,7 +101,7 @@ fields. An absent `instructions.md` preserves inherited instructions; a present
 file replaces them entirely. `output_schema` replaces the generic schema with
 the named file. Built-in lookups return independent values.
 
-Thirteen additional presets return a structured result with `status`, `report`,
+Thirteen general-purpose presets return a structured result with `status`, `report`,
 `sources`, and `notebook`. Their descriptions and contracts are in the
 [preset guide](../docs/presets.md). All presets remain free of model choices and
 tool grants. `BuiltinNames()` is the authoritative catalog.
@@ -221,3 +221,8 @@ and digest, not the current source catalog. Secret bindings remain late-bound.
 go test -race ./definitions
 go vet ./definitions
 ```
+
+The seven `pr-*` roles belong to the runtime's bundled `pr-review` workflow. Their
+review/report schemas differ from the general-purpose notebook envelope. All
+role instructions use `builtins/<name>/instructions.md`; shared schemas use
+`schemas/*.json`. No prompt files need to be copied into a deployment to use them.

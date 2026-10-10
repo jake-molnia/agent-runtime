@@ -12,6 +12,7 @@ func TestBuiltinCatalog(t *testing.T) {
 		"ci-failure-analyst", "findings-triager", "security-reviewer", "app-pentester",
 		"incident-analyst", "dependency-upgrader", "upstreamer", "researcher", "monitor",
 		"price-watcher", "news-researcher", "daily-brief", "opportunity-scout",
+		"pr-reviewer", "pr-adversarial", "pr-security", "pr-dependencies", "pr-verifier", "pr-triager", "pr-writer",
 	}
 	if !reflect.DeepEqual(BuiltinNames(), want) {
 		t.Fatalf("builtin catalog = %v, want %v", BuiltinNames(), want)
@@ -53,7 +54,11 @@ func TestLegacyBuiltinInstructions(t *testing.T) {
 
 func TestTaskPresetOutputContract(t *testing.T) {
 	catalog := loaded(t, defaultsFixture(t))
-	for _, name := range BuiltinNames()[3:] {
+	for _, preset := range builtinPresets {
+		if preset.schema != "result.schema.json" {
+			continue
+		}
+		name := preset.name
 		t.Run(name, func(t *testing.T) {
 			snapshot, err := catalog.Snapshot(name)
 			if err != nil {

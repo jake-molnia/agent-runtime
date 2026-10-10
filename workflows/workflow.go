@@ -22,6 +22,7 @@ const MaxInputBytes = 1 << 20
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 type Workflow struct {
+	Use          string          `json:"use,omitempty" yaml:"use,omitempty"`
 	Schedule     *Schedule       `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 	DefaultInput json.RawMessage `json:"input,omitempty" yaml:"-"`
 	Notebook     bool            `json:"notebook,omitempty" yaml:"notebook,omitempty"`
@@ -90,6 +91,9 @@ func (refs InputRefs) validate() error {
 }
 
 func (workflow Workflow) order() ([]string, error) {
+	if workflow.Use != "" {
+		return nil, errors.New("workflow preset must be resolved before ordering")
+	}
 	if err := workflow.validateRecurring(); err != nil {
 		return nil, err
 	}

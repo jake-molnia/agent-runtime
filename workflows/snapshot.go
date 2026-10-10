@@ -23,6 +23,10 @@ type Snapshot struct {
 }
 
 func Capture(workflow Workflow, catalog *definitions.Catalog) (Snapshot, error) {
+	workflow, err := workflow.expandPreset()
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if workflow.Version == 0 {
 		workflow.Version = 1
 	}

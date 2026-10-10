@@ -34,7 +34,7 @@ func TestNotebookContractAllowsExplicitEnvelope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range definitions.BuiltinNames()[3:] {
+	for _, name := range definitions.BuiltinNames()[3:16] {
 		agent, _ := definitions.Builtin(name)
 		workflow, catalog := notebookContractFixture(string(agent.Schema))
 		if _, err := Capture(workflow, catalog); err != nil {

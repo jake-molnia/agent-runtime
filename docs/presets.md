@@ -1,6 +1,6 @@
 # Agent presets and workflow starters
 
-The runtime includes 16 agent presets. A preset supplies instructions and an output contract. A workflow starter supplies an editable task brief and a single agent step. Models, credentials, tool services, and execution profiles come from deployment configuration.
+The runtime includes 16 general-purpose presets and seven specialized roles for its bundled PR review. A preset supplies instructions and an output contract. A workflow starter supplies an editable task brief and a single agent step. Models, credentials, tool services, and execution profiles come from deployment configuration.
 
 The everyday presets own discovery and investigation. A price watcher searches for retailers and evaluates offers. A daily brief researches and writes its own stories. These presets do not require merchant APIs, fixed news feeds, or a separate collection pipeline.
 
@@ -230,3 +230,32 @@ replay, CLI result handling, and every generated starter. Set
 `AGENT_RUNTIME_TEST_OPENCODE_BINARY` to OpenCode 2.0.26 to also exercise actual
 native tool permissions and MCP handshakes against local fake providers. These
 checks do not measure live-model task quality or deploy a Hatchet server.
+
+## Runtime-owned PR review
+
+Select the bundled workflow with `workflows init pr-review review-change`, or write
+`use: pr-review` in `workflows/review-change.yaml`. The command writes only a
+selector. It does not copy role prompts, schemas, or the graph into config.
+
+The runtime owns `pr-reviewer`, `pr-adversarial`, `pr-security`, `pr-dependencies`,
+`pr-verifier`, `pr-triager`, and `pr-writer`. Four independent investigations feed
+the verifier, whose findings feed triage and writeup. The writer returns an
+assessment and source-indexed findings. This is the analysis workflow; GitHub
+admission and publication still belong to a trusted integration. Source-index
+coverage must be validated by that integration before posting.
+
+The roles inherit deployment model/profile defaults and grant no tools themselves.
+At adoption, optional `agents/<role>/agent.yaml` files select different models,
+timeouts, and approved native/MCP tools. The investigative roles need repository
+access; triage and writer can operate without tools. Configuration need not carry
+any role instruction or schema files.
+
+All role prompts live at `definitions/builtins/<name>/instructions.md`. Shared
+schemas live at `definitions/schemas/`; the bundled graph is
+`workflows/presets/pr-review.yaml`. Generic starter task briefs are Markdown under
+`packs/briefs/`. The runtime compiles these assets into its binary.
+
+`use` cannot be mixed with authored `steps` or `output`. Default input and schedules
+remain optional. The expanded graph and resolved agents are captured in the run's
+snapshot, so replay never consults a newer pack definition. The multi-step PR pack
+does not use the single-agent notebook feature.

@@ -27,7 +27,8 @@ profiles:
 `
 
 func TestAllStartersLoad(t *testing.T) {
-	if !reflect.DeepEqual(packs.Names(), definitions.BuiltinNames()) {
+	wantNames := append(definitions.BuiltinNames()[:16], "pr-review")
+	if !reflect.DeepEqual(packs.Names(), wantNames) {
 		t.Fatal("starter catalog differs from builtin catalog")
 	}
 	root := t.TempDir()
@@ -44,7 +45,7 @@ func TestAllStartersLoad(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Contains(data, []byte("# schedule:")) {
+		if preset != "pr-review" && !bytes.Contains(data, []byte("# schedule:")) {
 			t.Fatal("optional schedule example missing")
 		}
 		if _, err := packs.Write(root, preset, "my-"+preset); !errors.Is(err, os.ErrExist) {
@@ -65,6 +66,15 @@ func TestAllStartersLoad(t *testing.T) {
 	}
 	for index, preset := range packs.Names() {
 		workflow := loaded["my-"+preset].Workflow
+		if preset == "pr-review" {
+			if len(workflow.Steps) != 7 || workflow.Steps[workflow.Output].Agent != "pr-writer" {
+				t.Fatalf("invalid PR pack: %+v", workflow)
+			}
+			if _, err := os.Stat(filepath.Join(root, "agents")); !os.IsNotExist(err) {
+				t.Fatal("pack copied runtime-owned agent definitions into configuration")
+			}
+			continue
+		}
 		if workflow.Schedule != nil || workflow.Notebook != (index >= 3) || len(workflow.Steps) != 1 || workflow.Steps[workflow.Output].Agent != preset {
 			t.Fatalf("incorrect starter for %s: %#v", preset, workflow)
 		}

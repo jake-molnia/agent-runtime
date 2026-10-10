@@ -52,6 +52,14 @@ directory but does not return them as authored workflows. Other stray files or
 subdirectories are rejected. Keep credentials outside these manifests and
 snapshots; execution resolves public secret-file bindings separately.
 
+## Bundled workflow selection
+
+`use: pr-review` selects the runtime-owned seven-agent review graph. Do not combine
+`use` with `steps` or `output`. `workflows init pr-review NAME` creates only that
+selector. Deployment config supplies models/profiles/grants, not copies of prompts
+or graph files. Capture expands the selector before pinning, so saved snapshots
+contain the full graph and never re-resolve a pack during replay.
+
 ## Default input, cron, and notebooks
 
 `input` at the workflow root supplies default task data. `run NAME --input FILE`

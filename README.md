@@ -2,7 +2,8 @@
 
 A Go runtime for config-owned agents and workflows, using Hatchet, isolated
 sandboxes, native OpenCode V2 sessions, and immutable typed message handoffs.
-It ships 16 agent presets for engineering, research, monitoring, and daily briefs.
+It ships general agent presets and a bundled seven-agent PR review workflow.
+Role instructions, schemas, and bundled graphs belong to this runtime.
 Workflows are opt-in configuration, including simple cron-triggered agents with
 durable notebooks. Agents investigate using explicitly granted native or MCP tools.
 
@@ -56,7 +57,22 @@ output: brief
 The agent receives its task and previous notebook, then returns a Markdown report,
 source links, and replacement notes. Hatchet schedules runs; the runtime saves
 validated notes and prevents overlapping notebook runs. See the
-[preset guide](docs/presets.md) for all 16 roles and tool configuration.
+[preset guide](docs/presets.md) for the roles and tool configuration.
+
+## Select the bundled PR review
+
+The runtime owns the review agents and graph. When adopting the runtime, config
+selects the pack and supplies deployment settings. It does not copy prompts:
+
+```yaml
+# workflows/review-change.yaml
+use: pr-review
+```
+
+`workflows init pr-review review-change` creates that selector. The pack runs
+independent general, adversarial, security, and dependency investigations, then
+verification, triage, and writeup. Model, profile, and tool overrides are ordinary
+`agents/pr-security/agent.yaml` settings; no `instructions.md` is required.
 
 ## Author a workflow
 

@@ -29,7 +29,7 @@ structured result contract described in [the preset guide](presets.md). Presets
 contain no model choices, credentials, or tool grants. Repository maintenance
 instructions use the task and deployment policies supplied to them.
 
-When `defaults` is configured, the catalog resolves all 16 builtins, including
+When `defaults` is configured, the catalog resolves all 23 builtins, including
 `code-review`, `verify`, and `adversarial-review`. You need no agent files to use them. Explicit standalone
 agent packages remain supported without deployment defaults.
 

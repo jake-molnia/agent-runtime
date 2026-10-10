@@ -42,6 +42,7 @@ func (schedule Schedule) Expression() (string, error) {
 
 func (workflow *Workflow) UnmarshalYAML(node *yaml.Node) error {
 	var wire struct {
+		Use      string          `yaml:"use"`
 		Version  int             `yaml:"version"`
 		Steps    map[string]Step `yaml:"steps"`
 		Output   string          `yaml:"output"`
@@ -70,7 +71,7 @@ func (workflow *Workflow) UnmarshalYAML(node *yaml.Node) error {
 			return fmt.Errorf("default input must be JSON compatible: %w", err)
 		}
 	}
-	*workflow = Workflow{Name: workflow.Name, Version: wire.Version, Steps: wire.Steps, Output: wire.Output, Schedule: wire.Schedule, DefaultInput: input, Notebook: wire.Notebook}
+	*workflow = Workflow{Use: wire.Use, Name: workflow.Name, Version: wire.Version, Steps: wire.Steps, Output: wire.Output, Schedule: wire.Schedule, DefaultInput: input, Notebook: wire.Notebook}
 	return nil
 }
 
@@ -119,11 +120,12 @@ func (workflow Workflow) MarshalYAML() (any, error) {
 		input = node.Content[0]
 	}
 	return struct {
+		Use      string          `yaml:"use,omitempty"`
 		Version  int             `yaml:"version,omitempty"`
-		Steps    map[string]Step `yaml:"steps"`
-		Output   string          `yaml:"output"`
+		Steps    map[string]Step `yaml:"steps,omitempty"`
+		Output   string          `yaml:"output,omitempty"`
 		Schedule *Schedule       `yaml:"schedule,omitempty"`
 		Input    *yaml.Node      `yaml:"input,omitempty"`
 		Notebook bool            `yaml:"notebook,omitempty"`
-	}{workflow.Version, workflow.Steps, workflow.Output, workflow.Schedule, input, workflow.Notebook}, nil
+	}{workflow.Use, workflow.Version, workflow.Steps, workflow.Output, workflow.Schedule, input, workflow.Notebook}, nil
 }
