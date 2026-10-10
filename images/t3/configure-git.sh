@@ -1,5 +1,19 @@
 #!/bin/sh
 set -eu
+if [ -n "${T3_GIT_IDENTITY_FILE:-}" ]; then
+  t3_git_name="$(git config --file "$T3_GIT_IDENTITY_FILE" --get user.name)"
+  t3_git_email="$(git config --file "$T3_GIT_IDENTITY_FILE" --get user.email)"
+  if [ -z "$t3_git_name" ] || [ -z "$t3_git_email" ]; then
+    printf '%s\n' 'Git identity requires user.name and user.email.' >&2
+    exit 1
+  fi
+  if ! git config --global --get user.name >/dev/null; then
+    git config --global user.name "$t3_git_name"
+  fi
+  if ! git config --global --get user.email >/dev/null; then
+    git config --global user.email "$t3_git_email"
+  fi
+fi
 if [ -n "${T3_GIT_CREDENTIALS_FILE:-}" ]; then
   git config --global --replace-all credential.helper ''
   git config --global --add credential.helper /usr/local/bin/t3-git-credential

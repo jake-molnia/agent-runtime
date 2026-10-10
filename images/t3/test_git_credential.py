@@ -67,6 +67,30 @@ class CredentialTest(unittest.TestCase):
         self.assertEqual(result.stdout, '\n/usr/local/bin/t3-git-credential\n')
         self.assertNotIn(self.token, (self.root / '.gitconfig').read_text())
 
+    def test_migrated_identity_authors_commits_without_overriding_user_or_repository_identity(self):
+        identity = self.root / 'identity.gitconfig'
+        identity.write_text('[user]\n\tname = Migrated User\n\temail = migrated@example.test\n')
+        env = {**self.env, 'T3_GIT_IDENTITY_FILE': str(identity), 'GIT_CONFIG_NOSYSTEM': '1'}
+        configure = lambda: subprocess.run(['sh', str(HERE / 'configure-git.sh')], env=env, check=True)
+        configure()
+        repo = self.root / 'repo'
+        repo.mkdir()
+        def git(*args):
+            return subprocess.run(['git', '-C', str(repo), *args], env=env, capture_output=True, text=True, check=True).stdout.strip()
+        git('init')
+        git('commit', '--allow-empty', '-m', 'Migrated identity')
+        self.assertEqual(git('log', '-1', '--format=%an <%ae>'), 'Migrated User <migrated@example.test>')
+        git('config', '--global', 'user.name', 'Edited User')
+        git('config', '--global', 'user.email', 'edited@example.test')
+        configure()
+        git('commit', '--allow-empty', '-m', 'Retained global identity')
+        self.assertEqual(git('log', '-1', '--format=%an <%ae>'), 'Edited User <edited@example.test>')
+        git('config', 'user.name', 'Repository User')
+        git('config', 'user.email', 'repository@example.test')
+        configure()
+        git('commit', '--allow-empty', '-m', 'Repository override')
+        self.assertEqual(git('log', '-1', '--format=%an <%ae>'), 'Repository User <repository@example.test>')
+
     def test_github_helpers_are_scoped_and_do_not_persist_tokens(self):
         env = {key: value for key, value in self.env.items() if key != 'T3_GIT_CREDENTIALS_FILE'}
         env.update(GH_TOKEN=self.token, GH_ENTERPRISE_TOKEN=self.token, GH_HOST='github.example.test:8443')
