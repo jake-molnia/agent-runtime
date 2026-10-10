@@ -57,6 +57,64 @@ def released(s):
         and not s.get('endpoint') and s.get('completedOperation') == s['request']['operationId'])
 
 
+def validate_release_basis(entry, current):
+    release, basis = entry['release'], entry.get('releaseBasis')
+    if not basis or current['profileHash'] != basis['profileHash'] or current['epoch'] != release['expectedGeneration']:
+        raise MigrationError('failed release profile or allocation changed')
+    handle, identity = current.get('handle'), current.get('identity')
+    if handle:
+        if any(handle.get(key) != basis['handle'].get(key) for key in (
+                'namespace', 'workspaceId', 'allocationId', 'pvc', 'pvcUid', 'pvcSpecHash', 'sandbox', 'uid', 'specHash')):
+            raise MigrationError('failed release storage or allocation changed')
+        if not identity or identity != basis['identity']:
+            raise MigrationError('failed release worker identity changed')
+    elif current['phase'] != 'released' or identity or current.get('endpoint'):
+        raise MigrationError('failed release has an unknown allocation state')
+
+
+def retry_failed_release(pool, entry, current, persist, source):
+    release = entry['release']
+    replacement_pending = current['request'] != release
+    if replacement_pending:
+        attempts = entry.get('releaseAttempts', [])
+        if not attempts:
+            basis = entry.get('releaseBasis')
+            if not basis or current['request'] != basis['request'] or current.get('completedOperation') != current['request']['operationId']:
+                raise MigrationError('initial release was superseded')
+            validate_release_basis(entry, current)
+            return current
+        predecessor = attempts[-1]
+        if current['request'] != predecessor['request'] or current.get('taskId') != predecessor['taskId']:
+            raise MigrationError('replacement release predecessor changed')
+    if not current.get('taskId'):
+        return current
+    task_id = current['taskId']
+    code, task = request(pool, '/v1/operations/' + urllib.parse.quote(task_id, safe=''))
+    if code != 200:
+        raise MigrationError('release task status is unknown; retry the same ledger')
+    if task['status'] not in ('FAILED', 'CANCELLED'):
+        if replacement_pending:
+            raise MigrationError('replacement release predecessor is not terminal')
+        return current
+    code, confirmed = state(pool, release['workspaceId'], source)
+    if code != 200 or confirmed['request'] != current['request'] or confirmed.get('taskId') != task_id:
+        raise MigrationError('failed release was superseded')
+    if released(confirmed):
+        return confirmed
+    validate_release_basis(entry, confirmed)
+    if replacement_pending:
+        return confirmed
+    entry.setdefault('releaseAttempts', []).append({
+        'request': release, 'taskId': task_id, 'status': task['status'],
+    })
+    entry['release'] = {**release,
+        'operationId': 'profile-migration:' + str(uuid.uuid4()),
+        'revision': max(entry['before']['admission_revision'], confirmed['request']['revision']) + 1,
+    }
+    persist()
+    return confirmed
+
+
 def migrate_controller(pool, entry, persist, source, target, timeout):
     workspace = entry['before']['workspace_id']
     code, current = state(pool, workspace, source)
@@ -79,6 +137,7 @@ def migrate_controller(pool, entry, persist, source, target, timeout):
                 raise MigrationError('workspace has no stable allocation to release')
             if current.get('completedOperation') != current['request']['operationId']:
                 raise MigrationError('workspace has an unfinished lifecycle operation')
+            entry['releaseBasis'] = json.loads(json.dumps(current))
             revision = max(entry['before']['admission_revision'], current['request']['revision']) + 1
             entry['release'] = {
                 'workspaceId': workspace, 'profile': source, 'action': 'release_compute',
@@ -88,23 +147,25 @@ def migrate_controller(pool, entry, persist, source, target, timeout):
                 'expectedIncarnation': current['identity']['incarnation'],
             }
             persist()
-        release = entry['release']
-        code, submission = request(pool, '/v1/operations', release)
-        if code != 202:
-            raise MigrationError('release admission rejected (HTTP %s)' % code)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            code, current = state(pool, workspace, source)
-            if code == 200 and released(current):
-                if current['request']['operationId'] != release['operationId']:
-                    raise MigrationError('workspace release superseded')
-                break
-            status_code, task = request(pool, '/v1/operations/' + urllib.parse.quote(submission['taskId'], safe=''))
-            if status_code != 200 or task['status'] in ('FAILED', 'CANCELLED'):
-                raise MigrationError('workspace release did not complete')
-            time.sleep(1)
-        else:
-            raise MigrationError('workspace release timed out; retry the same ledger')
+        current = retry_failed_release(pool, entry, current, persist, source)
+        if not released(current):
+            release = entry['release']
+            code, submission = request(pool, '/v1/operations', release)
+            if code != 202:
+                raise MigrationError('release admission rejected (HTTP %s)' % code)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                code, current = state(pool, workspace, source)
+                if code == 200 and released(current):
+                    if current['request']['operationId'] != release['operationId']:
+                        raise MigrationError('workspace release superseded')
+                    break
+                status_code, task = request(pool, '/v1/operations/' + urllib.parse.quote(submission['taskId'], safe=''))
+                if status_code != 200 or task['status'] in ('FAILED', 'CANCELLED'):
+                    raise MigrationError('workspace release did not complete')
+                time.sleep(1)
+            else:
+                raise MigrationError('workspace release timed out; retry the same ledger')
     if entry.get('release') and current['request']['operationId'] != entry['release']['operationId']:
         raise MigrationError('workspace release superseded')
     migration = {
