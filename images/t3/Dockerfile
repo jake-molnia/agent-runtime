@@ -114,7 +114,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && mkdir /data && chown node:node /data
 COPY --from=worker-package /out/worker /opt/t3
 COPY --from=web-build /src/t3/apps/web/dist /opt/t3/dist/client
-COPY images/t3/smoke-web.py /opt/t3/
+COPY images/t3/smoke-web.py images/t3/migrate-execution-profiles.py images/t3/test_migrate_execution_profiles.py /opt/t3/
+RUN PYTHONDONTWRITEBYTECODE=1 python3 /opt/t3/test_migrate_execution_profiles.py \
+    && rm /opt/t3/test_migrate_execution_profiles.py
 ENV HOME=/data T3CODE_HOME=/data/t3
 USER 1000:1000
 WORKDIR /data
