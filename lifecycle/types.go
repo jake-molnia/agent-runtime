@@ -7,6 +7,7 @@ import (
 	"github.com/jake-molnia/agent-runtime/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	"net/http"
+	"sync"
 )
 
 type Action string
@@ -90,6 +91,8 @@ type Access struct {
 }
 type Controller struct {
 	gatewayCache gatewayCache
+	IDE          *IDEConfig
+	ideMu        sync.Mutex
 	PoolID       string
 	PublicURL    string
 	Resources    func(context.Context) (ResourceSnapshot, error)

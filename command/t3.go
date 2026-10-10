@@ -58,6 +58,13 @@ func t3Worker(ctx context.Context) error {
 			return errors.New("invalid T3_PUBLIC_URL")
 		}
 	}
+	if domain := os.Getenv("T3_IDE_DOMAIN"); domain != "" {
+		config := lifecycle.IDEConfig{Domain: domain, ProxyGroup: os.Getenv("T3_IDE_PROXY_GROUP"), BackendService: "t3-runtime", BackendPort: 8084, CallbackURL: os.Getenv("T3_IDE_CALLBACK_URL"), Tags: strings.Split(os.Getenv("T3_IDE_TAGS"), ",")}
+		if err := config.Validate(); err != nil {
+			return err
+		}
+		controller.IDE = &config
+	}
 	controller.Resources = lifecycle.Resources(control.API, os.Getenv("T3_NODE_SELECTOR"), os.Getenv("T3_RESOURCE_NODE"))
 	client, err := hatchet.NewClient()
 	if err != nil {
