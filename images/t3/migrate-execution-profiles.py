@@ -134,6 +134,11 @@ def apply(db_path, pools_path, ledger_path, source, target, timeout=300):
     ledger_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with ledger_path.with_suffix('.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not db_path.exists():
+            if ledger_path.exists() or ledger_path.with_suffix('.sqlite-backup').exists():
+                raise MigrationError('retained migration state exists but its database is missing')
+            print(json.dumps({'status': 'fresh-install', 'profile': target}), flush=True)
+            return
         db = sqlite3.connect('file:' + urllib.parse.quote(str(db_path.resolve()), safe='/') + '?mode=rw', uri=True, timeout=5)
         db.row_factory = sqlite3.Row
         try:
@@ -143,13 +148,25 @@ def apply(db_path, pools_path, ledger_path, source, target, timeout=300):
                     raise MigrationError('ledger belongs to a different migration')
             else:
                 backup = ledger_path.with_suffix('.sqlite-backup')
-                fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                # No mutations begin before the ledger exists. An interrupted
+                # initial backup can therefore be regenerated on the next init.
+                temporary_backup = backup.with_suffix('.sqlite-backup.pending')
+                temporary_backup.unlink(missing_ok=True)
+                fd = os.open(temporary_backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.close(fd)
-                destination = sqlite3.connect(backup)
+                destination = sqlite3.connect(temporary_backup)
                 try:
                     db.backup(destination)
                 finally:
                     destination.close()
+                with temporary_backup.open('rb') as stream:
+                    os.fsync(stream.fileno())
+                os.replace(temporary_backup, backup)
+                directory = os.open(backup.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
                 ledger = {'scope': scope, 'backup': str(backup), 'workspaces': {}}
                 save(ledger_path, ledger)
             if ledger.get('complete'):

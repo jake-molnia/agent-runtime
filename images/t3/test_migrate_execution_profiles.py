@@ -67,6 +67,19 @@ class MigrationTests(unittest.TestCase):
                 migration.apply(database,pools,ledger,'v1','v2')
             db.close()
 
+    def test_fresh_install_skips_without_creating_database_or_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'pools').write_text(json.dumps({'defaultPoolId':'p','pools':[{'id':'p','profile':'v2','url':'http://x','tokenFile':'unused'}]}))
+            with patch.object(migration,'request') as controller:
+                migration.apply(root/'db',root/'pools',root/'ledger','v1','v2')
+                controller.assert_not_called()
+            self.assertFalse((root/'db').exists())
+            self.assertFalse((root/'ledger').exists())
+            (root/'ledger').with_suffix('.sqlite-backup').touch()
+            with self.assertRaises(migration.MigrationError):
+                migration.apply(root/'db',root/'pools',root/'ledger','v1','v2')
+
     def test_no_controller_allocation_preserves_higher_database_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
@@ -75,8 +88,17 @@ class MigrationTests(unittest.TestCase):
             db.execute('INSERT INTO agent_runtime_workspaces VALUES (?,?,?,?,?)',('new',None,None,23,'old'))
             db.commit()
             (root/'pools').write_text(json.dumps({'defaultPoolId':'p','pools':[{'id':'p','profile':'v2','url':'http://x','tokenFile':'unused'}]}))
-            with patch.object(migration,'request',return_value=(404,None)):
+            with patch.object(migration,'request',return_value=(404,None)) as controller:
+                with patch.object(migration,'save',side_effect=migration.MigrationError('crash before first ledger')):
+                    with self.assertRaises(migration.MigrationError):
+                        migration.apply(root/'db',root/'pools',root/'ledger','v1','v2')
+                self.assertFalse((root/'ledger').exists())
+                self.assertTrue((root/'ledger').with_suffix('.sqlite-backup').exists())
+                controller.assert_not_called()
+                # Also model a partial temporary backup left by an earlier crash.
+                (root/'ledger').with_suffix('.sqlite-backup.pending').write_bytes(b'partial')
                 migration.apply(root/'db',root/'pools',root/'ledger','v1','v2')
+                self.assertFalse((root/'ledger').with_suffix('.sqlite-backup.pending').exists())
             self.assertEqual(db.execute('SELECT pool_id,profile_id,admission_revision,lifecycle_request_json FROM agent_runtime_workspaces').fetchone(),('p','v2',23,None))
             db.close()
 
