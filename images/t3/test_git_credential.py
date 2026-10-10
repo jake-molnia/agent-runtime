@@ -39,6 +39,18 @@ class CredentialTest(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
             self.assertEqual(self.file.read_bytes(), original)
 
+    def test_repeated_git_capabilities_do_not_hide_credentials(self):
+        result = self.helper(query='capability[]=authtype\ncapability[]=state\nprotocol=https\nhost=git.example.test:8443\n\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, f'username=example\npassword={self.token}\n\n')
+        self.assertEqual(result.stderr, '')
+
+    def test_repeated_scalar_fields_still_fail_closed(self):
+        result = self.helper(query='protocol=https\nhost=other.test\nhost=git.example.test:8443\n\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertNotIn(self.token, result.stderr)
+
     def test_invalid_profile_cannot_inject_credential_fields_or_leak_data(self):
         self.document['credentials'][0]['token'] = self.token + '\npassword=injected'
         self.file.write_text(json.dumps(self.document))

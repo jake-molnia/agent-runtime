@@ -20,6 +20,8 @@ def get_credential():
         if not line:
             break
         key, separator, value = line.partition('=')
+        if separator and key == 'capability[]':
+            continue
         if not separator or key in query:
             return 1
         query[key] = value
