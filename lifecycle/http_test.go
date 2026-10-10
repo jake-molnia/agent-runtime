@@ -115,3 +115,31 @@ func TestFailedLifecycleSubmissionCanRetrySameIntent(t *testing.T) {
 		t.Fatal("failed task permanently pinned the request")
 	}
 }
+
+func TestProfileMigrationHTTPRequiresManagementAuthAndStrictJSON(t *testing.T) {
+	c, _, _ := fixture(t)
+	s := run(t, c, request(1, EnsureRunning))
+	s = run(t, c, stopRequest(2, ReleaseCompute, s))
+	c.Profiles["next"] = c.Profiles["default"]
+	migration := ProfileMigration{WorkspaceID: s.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: s.ProfileHash, ExpectedRevision: s.Request.Revision, ExpectedEpoch: s.Epoch}
+	body, _ := json.Marshal(migration)
+	h := Handler(c, &fakeTasks{}, "internal-key")
+	for _, test := range []struct {
+		auth, body string
+		status     int
+	}{
+		{"", string(body), 401},
+		{"Bearer wrong", string(body), 401},
+		{"Bearer internal-key", string(body) + " {}", 400},
+		{"Bearer internal-key", `{"unknown":true}`, 400},
+		{"Bearer internal-key", string(body), 200},
+	} {
+		req := httptest.NewRequest("POST", "/v1/profile-migrations", strings.NewReader(test.body))
+		req.Header.Set("Authorization", test.auth)
+		out := httptest.NewRecorder()
+		h.ServeHTTP(out, req)
+		if out.Code != test.status {
+			t.Fatalf("got %d, want %d: %s", out.Code, test.status, out.Body.String())
+		}
+	}
+}

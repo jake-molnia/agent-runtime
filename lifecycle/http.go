@@ -39,6 +39,25 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, snapshot)
 	})
+	mux.HandleFunc("POST /v1/profile-migrations", func(w http.ResponseWriter, r *http.Request) {
+		var request ProfileMigration
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&request); err != nil {
+			http.Error(w, "invalid request", 400)
+			return
+		}
+		if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
+			http.Error(w, "trailing request data", 400)
+			return
+		}
+		state, err := c.MigrateProfile(r.Context(), request)
+		if err != nil {
+			http.Error(w, err.Error(), 409)
+			return
+		}
+		writeJSON(w, 200, state)
+	})
 	mux.HandleFunc("POST /v1/operations", func(w http.ResponseWriter, r *http.Request) {
 		var request Request
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
