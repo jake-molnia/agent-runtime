@@ -18,15 +18,18 @@ type workerHealth struct {
 	observed time.Time
 }
 
-func (h *workerHealth) observe(name string, workers *rest.WorkerList, err error, now time.Time) {
-	ready := false
+func (h *workerHealth) observe(names []string, workers *rest.WorkerList, err error, now time.Time) {
+	active := make(map[string]bool, len(names))
 	if err == nil && workers != nil && workers.Rows != nil {
 		for _, worker := range *workers.Rows {
-			if worker.Name == name && worker.Status != nil && *worker.Status == rest.ACTIVE && worker.LastHeartbeatAt != nil && now.Sub(*worker.LastHeartbeatAt) < 45*time.Second {
-				ready = true
-				break
+			if worker.Status != nil && *worker.Status == rest.ACTIVE && worker.LastHeartbeatAt != nil && now.Sub(*worker.LastHeartbeatAt) < 45*time.Second {
+				active[worker.Name] = true
 			}
 		}
+	}
+	ready := len(names) > 0
+	for _, name := range names {
+		ready = ready && active[name]
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -54,14 +57,14 @@ func (h *workerHealth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
 }
-func (h *workerHealth) monitor(ctx context.Context, name string, list func(context.Context) (*rest.WorkerList, error)) error {
+func (h *workerHealth) monitor(ctx context.Context, names []string, list func(context.Context) (*rest.WorkerList, error)) error {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
 		check, cancel := context.WithTimeout(ctx, 5*time.Second)
 		workers, err := list(check)
 		cancel()
-		h.observe(name, workers, err, time.Now())
+		h.observe(names, workers, err, time.Now())
 		select {
 		case <-ctx.Done():
 			h.mu.Lock()

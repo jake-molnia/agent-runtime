@@ -91,7 +91,7 @@ func (e *Engine) Client(key string, p Prepared) (*opencode.Client, error) {
 }
 func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out Prepared, err error) {
 	if len(e.SecretKey) < 32 || req.Key == "" || d.Config == nil || d.Timeout <= 0 || d.Timeout > 24*time.Hour {
-		return out, errors.New("invalid engine, definition or run key")
+		return out, provisionFailure("configuration", errors.New("invalid engine, definition or run key"))
 	}
 	start := req.SubmittedAt
 	if start.IsZero() {
@@ -100,6 +100,9 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	out.Started = start
 	out.SessionID, out.MessageID = ids(req.Key)
 	run := e.Telemetry.Run(start, d.Pool, "unknown")
+	phase := func(ctx context.Context, p telemetry.Phase, fn func(context.Context) error) error {
+		return provisionFailure(string(p), run.Phase(ctx, p, fn))
+	}
 	var secrets map[string]string
 	var identity tailnet.Identity
 	defer func() {
@@ -107,16 +110,16 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if out.Lease.UID != "" {
-				err = errors.Join(err, e.Control.Delete(cleanup, out.Lease))
+				err = errors.Join(err, provisionFailure("claim_cleanup", e.Control.Delete(cleanup, out.Lease)))
 			}
 			if identity.ID != "" {
-				err = errors.Join(err, e.Tailnet.Revoke(cleanup, identity))
+				err = errors.Join(err, provisionFailure("identity_cleanup", e.Tailnet.Revoke(cleanup, identity)))
 			}
 		}
 	}()
 	g, parallel := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		return run.Phase(parallel, telemetry.Claim, func(ctx context.Context) error {
+		return phase(parallel, telemetry.Claim, func(ctx context.Context) error {
 			var claimErr error
 			out.Lease, claimErr = e.Control.Claim(ctx, d.Namespace, d.Pool, req.Key, start.Add(d.Timeout+5*time.Minute))
 			run.Launch(out.Lease.Launch)
@@ -124,7 +127,7 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 		})
 	})
 	g.Go(func() error {
-		return run.Phase(parallel, telemetry.Secrets, func(ctx context.Context) error {
+		return phase(parallel, telemetry.Secrets, func(ctx context.Context) error {
 			if d.Secrets == nil {
 				secrets = map[string]string{}
 				return nil
@@ -136,7 +139,7 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	})
 	if len(d.Tags) > 0 {
 		g.Go(func() error {
-			return run.Phase(parallel, telemetry.Identity, func(ctx context.Context) error {
+			return phase(parallel, telemetry.Identity, func(ctx context.Context) error {
 				if e.Tailnet == nil {
 					return errors.New("tailnet client required")
 				}
@@ -153,28 +156,28 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	out.Hostname = identity.Hostname
 	metrics, err := e.Telemetry.RuntimeMetrics()
 	if err != nil {
-		return out, err
+		return out, provisionFailure("telemetry", err)
 	}
 	rt, err := sandbox.Connect(out.Lease.Host, metrics.Transport(e.Transport), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(metrics.Unary()), grpc.WithChainStreamInterceptor(metrics.Stream()))
 	if err != nil {
-		return out, err
+		return out, provisionFailure("runtime", err)
 	}
 	defer rt.Close()
-	if err = run.Phase(ctx, telemetry.Runtime, rt.Files.Ready); err != nil {
+	if err = phase(ctx, telemetry.Runtime, rt.Files.Ready); err != nil {
 		return out, err
 	}
 	config, err := d.Config(secrets)
 	if err != nil {
-		return out, err
+		return out, provisionFailure("configuration", err)
 	}
 	input := runtimeapi.Init{AllowProjectConfig: d.AllowProjectConfig, SkillBundleDigest: d.SkillBundleDigest, RunID: req.Key, Password: e.Password(req.Key), TailnetKey: identity.Key, Hostname: identity.Hostname, Config: config}
 	g, parallel = errgroup.WithContext(ctx)
 	g.Go(func() error {
-		return run.Phase(parallel, telemetry.Initialize, func(ctx context.Context) error { return e.initialize(ctx, out.Lease.Host, input, run) })
+		return phase(parallel, telemetry.Initialize, func(ctx context.Context) error { return e.initialize(ctx, out.Lease.Host, input, run) })
 	})
 	if d.Prepare != nil {
 		g.Go(func() error {
-			return run.Phase(parallel, telemetry.Checkout, func(ctx context.Context) error { return d.Prepare(ctx, rt, secrets) })
+			return phase(parallel, telemetry.Checkout, func(ctx context.Context) error { return d.Prepare(ctx, rt, secrets) })
 		})
 	}
 	if err = g.Wait(); err != nil {
@@ -183,12 +186,12 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	run.Milestone(ctx, "harness_ready")
 	client, err := e.Client(req.Key, out)
 	if err != nil {
-		return out, err
+		return out, provisionFailure("session", err)
 	}
 	if err := client.ReadyMCP(ctx, d.Directory, d.MCPServers); err != nil {
-		return out, err
+		return out, provisionFailure("mcp", err)
 	}
-	err = run.Phase(ctx, telemetry.Session, func(ctx context.Context) error {
+	err = phase(ctx, telemetry.Session, func(ctx context.Context) error {
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("opencode.session_id", out.SessionID))
 		// A stable client-selected ID permits recovery if session creation's response was lost.
 		res, getErr := client.Do(ctx, "GET", "/api/session/{sessionID}", opencode.Arguments{Path: map[string]string{"sessionID": out.SessionID}})
@@ -470,4 +473,29 @@ func (e *Engine) Cancel(ctx context.Context, d Definition, req Request) error {
 		p.Hostname = lease.Claim
 	}
 	return e.Cleanup(ctx, req, p)
+}
+
+// ProvisionError identifies only a fixed execution phase; its underlying cause
+// remains inspectable without exposing provider credentials in task errors.
+type ProvisionError struct {
+	phase string
+	cause error
+}
+
+func (e *ProvisionError) Phase() string { return e.phase }
+func (e *ProvisionError) Error() string { return "provision " + e.phase + " failed" }
+func (e *ProvisionError) Unwrap() error { return e.cause }
+func provisionFailure(phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ProvisionError{phase: phase, cause: err}
+}
+
+func (e *ProvisionError) Diagnostic() string {
+	var mcp *opencode.MCPReadinessError
+	if e.phase == "mcp" && errors.As(e.cause, &mcp) {
+		return mcp.Error()
+	}
+	return ""
 }

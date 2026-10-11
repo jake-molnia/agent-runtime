@@ -1,0 +1,315 @@
+{
+  "t3_revision": "580948708b66f2a971199670f76cb6b43119e9a4",
+  "checks": [
+    {
+      "id": "sqlite-wal",
+      "root": "t3",
+      "path": "apps/server/src/persistence/Sqlite.ts",
+      "matches": [
+        {
+          "line": 21,
+          "text": "yield* sql`PRAGMA journal_mode = WAL;`;"
+        }
+      ]
+    },
+    {
+      "id": "central-shutdown",
+      "root": "t3",
+      "path": "apps/server/src/serverRuntimeStartup.ts",
+      "matches": [
+        {
+          "line": 450,
+          "text": "Effect.ensuring(providerSessions.shutdown),"
+        }
+      ]
+    },
+    {
+      "id": "recover-before-worker",
+      "root": "t3",
+      "path": "apps/server/src/serverRuntimeStartup.ts",
+      "matches": [
+        {
+          "line": 408,
+          "text": "const recovery = yield* input.recover;"
+        }
+      ]
+    },
+    {
+      "id": "mcp-loopback",
+      "root": "t3",
+      "path": "apps/server/src/mcp/McpSessionRegistry.ts",
+      "matches": [
+        {
+          "line": 93,
+          "text": "? \"127.0.0.1\""
+        },
+        {
+          "line": 108,
+          "text": ": \"http://127.0.0.1/mcp\";"
+        }
+      ]
+    },
+    {
+      "id": "mcp-memory-state",
+      "root": "t3",
+      "path": "apps/server/src/mcp/McpSessionRegistry.ts",
+      "matches": [
+        {
+          "line": 103,
+          "text": "const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });"
+        },
+        {
+          "line": 202,
+          "text": "records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),"
+        },
+        {
+          "line": 217,
+          "text": "revokeAll: SynchronizedRef.set(state, { records: new Map() }),"
+        }
+      ]
+    },
+    {
+      "id": "lineage-fork-subagent",
+      "root": "t3",
+      "path": "packages/contracts/src/orchestrationV2.ts",
+      "matches": [
+        {
+          "line": 110,
+          "text": "relationshipToParent: Schema.NullOr(Schema.Literals([\"fork\", \"subagent\"])),"
+        }
+      ]
+    },
+    {
+      "id": "claude-sdk",
+      "root": "t3",
+      "path": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "matches": [
+        {
+          "line": 28,
+          "text": "} from \"@anthropic-ai/claude-agent-sdk\";"
+        },
+        {
+          "line": 32,
+          "text": "} from \"@anthropic-ai/claude-agent-sdk/sdk-tools\";"
+        }
+      ]
+    },
+    {
+      "id": "cursor-sdk",
+      "root": "t3",
+      "path": "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.ts",
+      "matches": [
+        {
+          "line": 10,
+          "text": "} from \"@cursor/sdk\";"
+        }
+      ]
+    },
+    {
+      "id": "muse-sdk",
+      "root": "t3",
+      "path": "apps/server/src/provider/museSdk.ts",
+      "matches": [
+        {
+          "line": 4,
+          "text": "spawnMspConnection,"
+        },
+        {
+          "line": 87,
+          "text": "spawn: typeof spawnMspConnection = spawnMspConnection,"
+        }
+      ]
+    },
+    {
+      "id": "native-file-paths",
+      "root": "t3",
+      "path": "apps/server/src/workspace/WorkspaceFileSystem.ts",
+      "matches": [
+        {
+          "line": 153,
+          "text": "try: () => NodeFSP.realpath(requestedPath),"
+        },
+        {
+          "line": 173,
+          "text": "try: () => NodeFSP.realpath(input.cwd),"
+        },
+        {
+          "line": 185,
+          "text": "try: () => NodeFSP.realpath(target.absolutePath),"
+        }
+      ]
+    },
+    {
+      "id": "native-search",
+      "root": "t3",
+      "path": "apps/server/src/workspace/WorkspaceSearchIndex.ts",
+      "matches": [
+        {
+          "line": 309,
+          "text": "FileFinder.create({"
+        },
+        {
+          "line": 323,
+          "text": "reason: \"FileFinder.create threw unexpectedly.\","
+        }
+      ]
+    },
+    {
+      "id": "native-pty",
+      "root": "t3",
+      "path": "apps/server/src/terminal/NodePtyAdapter.ts",
+      "matches": [
+        {
+          "line": 274,
+          "text": "const nativeProcess = nodePty.spawn(input.shell, input.args ?? [], {"
+        }
+      ]
+    },
+    {
+      "id": "browser-localhost",
+      "root": "t3",
+      "path": "apps/server/src/preview/ServerBrowser.ts",
+      "matches": [
+        {
+          "line": 1166,
+          "text": "return `${target.protocol ?? \"http\"}://localhost:${target.port}${path.startsWith(\"/\") || path === \"\" ? path : `/${path}`}`;"
+        }
+      ]
+    },
+    {
+      "id": "checkpoint-ref-update",
+      "root": "t3",
+      "path": "apps/server/src/vcs/GitVcsDriver.ts",
+      "matches": [
+        {
+          "line": 1072,
+          "text": "args: [...durableWrite, \"update-ref\", input.checkpointRef, commitOid],"
+        },
+        {
+          "line": 1232,
+          "text": "args: [\"update-ref\", \"-d\", checkpointRef],"
+        }
+      ]
+    },
+    {
+      "id": "settle-detached",
+      "root": "t3",
+      "path": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "matches": [
+        {
+          "line": 583,
+          "text": "yield* run.completion.pipe(Effect.forkDetach);"
+        }
+      ]
+    },
+    {
+      "id": "blocking-requests-recovery",
+      "root": "t3",
+      "path": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "matches": [
+        {
+          "line": 229,
+          "text": "(request) => request.status === \"pending\" && request.responseCapability.type !== \"message\","
+        }
+      ]
+    },
+    {
+      "id": "hatchet-run-identity",
+      "root": "runtime",
+      "path": "hatchetbridge/bridge.go",
+      "matches": [
+        {
+          "line": 64,
+          "text": "input.Run.Key = ctx.WorkflowRunId()"
+        },
+        {
+          "line": 90,
+          "text": "input.Run.Key = ctx.WorkflowRunId()"
+        },
+        {
+          "line": 107,
+          "text": "input.Run.Key = ctx.WorkflowRunId()"
+        },
+        {
+          "line": 117,
+          "text": "input.Run.Key = ctx.WorkflowRunId()"
+        },
+        {
+          "line": 134,
+          "text": "input.Run.Key = ctx.WorkflowRunId()"
+        }
+      ]
+    },
+    {
+      "id": "hatchet-run-deadline",
+      "root": "runtime",
+      "path": "hatchetbridge/bridge.go",
+      "matches": [
+        {
+          "line": 100,
+          "text": "}, hatchet.WithParents(provision), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))"
+        }
+      ]
+    },
+    {
+      "id": "suspend-no-memory",
+      "root": "runtime",
+      "path": "sandbox/control.go",
+      "matches": [
+        {
+          "line": 184,
+          "text": "// Scale pauses/resumes the workload; memory state is not preserved. Storage follows its volume policy."
+        }
+      ]
+    },
+    {
+      "id": "sandbox-pvc-ownership",
+      "root": "agent_sandbox",
+      "path": "controllers/sandbox_controller.go",
+      "matches": [
+        {
+          "line": 1667,
+          "text": "if err := ctrl.SetControllerReference(sandbox, pvc, r.Scheme); err != nil {"
+        },
+        {
+          "line": 1701,
+          "text": "if err := ctrl.SetControllerReference(sandbox, pvc, r.Scheme); err != nil {"
+        }
+      ]
+    },
+    {
+      "id": "sandbox-pod-spec",
+      "root": "agent_sandbox",
+      "path": "controllers/sandbox_controller.go",
+      "matches": [
+        {
+          "line": 1434,
+          "text": "mutatedSpec := sandbox.Spec.PodTemplate.Spec.DeepCopy()"
+        }
+      ]
+    },
+    {
+      "id": "claim-warm-exclusions",
+      "root": "agent_sandbox",
+      "path": "extensions/controllers/sandboxclaim_controller.go",
+      "matches": [
+        {
+          "line": 1697,
+          "text": "if len(claim.Spec.VolumeClaimTemplates) > 0 {"
+        },
+        {
+          "line": 1735,
+          "text": "if len(claim.Spec.Env) > 0 {"
+        },
+        {
+          "line": 2112,
+          "text": "// If len(claim.Spec.Env) > 0 or len(claim.Spec.VolumeClaimTemplates) > 0, the controller immediately bypasses the warm pool queue."
+        },
+        {
+          "line": 2113,
+          "text": "if len(claim.Spec.Env) > 0 || len(claim.Spec.VolumeClaimTemplates) > 0 {"
+        }
+      ]
+    }
+  ]
+}

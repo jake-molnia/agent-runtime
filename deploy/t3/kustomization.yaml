@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - runtime.yaml
+  - web.yaml
+configMapGenerator:
+  - name: t3-profiles
+    namespace: t3-control
+    files:
+      - t3-profiles.json

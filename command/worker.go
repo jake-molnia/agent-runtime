@@ -144,6 +144,7 @@ func worker(ctx context.Context) error {
 		}
 	}
 	var webhook http.Handler
+	var reviewAdapter, reviewIngress *hatchet.Workflow
 	labels := map[string]any{}
 	if reviewsEnabled {
 		if reviewChild == nil {
@@ -157,7 +158,7 @@ func worker(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		registered = append(registered, adapter, ingress)
+		reviewAdapter, reviewIngress = adapter, ingress
 		webhook, err = reviewWebhook(reviewConfig, ingress)
 		if err != nil {
 			return err
@@ -171,15 +172,23 @@ func worker(ctx context.Context) error {
 		return errors.New("invalid worker slots")
 	}
 	workerName := env("AGENT_WORKER_NAME", "agent-runtime") + "-" + uuid.NewString()
-	worker, err := client.NewWorker(workerName, hatchet.WithWorkflows(registered...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots), hatchet.WithLabels(labels))
-	if err != nil {
-		return err
-	}
+	groups := workerWorkflowGroups(registered, reviewAdapter, reviewIngress)
 	instrument, err := hatchetbridge.Instrument(ctx, tel)
 	if err != nil {
 		return err
 	}
-	worker.Use(instrument.Middleware())
+	workers := make([]*hatchet.Worker, 0, len(groups))
+	workerNames := make([]string, 0, len(groups))
+	for _, group := range groups {
+		name := workerName + "-" + group.name
+		worker, err := client.NewWorker(name, hatchet.WithWorkflows(group.workflows...), hatchet.WithSlots(slots), hatchet.WithDurableSlots(slots), hatchet.WithLabels(labels))
+		if err != nil {
+			return err
+		}
+		worker.Use(instrument.Middleware())
+		workers = append(workers, worker)
+		workerNames = append(workerNames, name)
+	}
 	health := &workerHealth{}
 	mux := http.NewServeMux()
 	for _, path := range []string{"/healthz", "/startupz", "/readyz"} {
@@ -208,9 +217,11 @@ func worker(ctx context.Context) error {
 			}
 		})
 	}
-	g.Go(func() error { return health.monitor(ctx, workerName, client.Workers().List) })
+	g.Go(func() error { return health.monitor(ctx, workerNames, client.Workers().List) })
 	g.Go(func() error { return httpServer(ctx, ":9091", mux) })
-	g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
+	for _, worker := range workers {
+		g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
+	}
 	return g.Wait()
 }
 
@@ -221,4 +232,22 @@ func reapTailnet(ctx context.Context, control *sandbox.Control, client *tailnet.
 		return err
 	}
 	return client.Reap(ctx, active)
+}
+
+// Waiting parents retain their cancellation guards. Each dependency tier owns
+// separate scheduler capacity, so no number of parents can consume child slots.
+type workerWorkflowGroup struct {
+	name      string
+	workflows []hatchet.WorkflowBase
+}
+
+func workerWorkflowGroups(configured []hatchet.WorkflowBase, adapter, ingress *hatchet.Workflow) []workerWorkflowGroup {
+	groups := []workerWorkflowGroup{{name: "agents", workflows: configured}}
+	if adapter != nil {
+		groups = append(groups, workerWorkflowGroup{name: "review", workflows: []hatchet.WorkflowBase{adapter}})
+	}
+	if ingress != nil {
+		groups = append(groups, workerWorkflowGroup{name: "ingress", workflows: []hatchet.WorkflowBase{ingress}})
+	}
+	return groups
 }

@@ -114,6 +114,9 @@ func TestReviewRegistration(t *testing.T) {
 	if len(regular) != 2 || len(durable) != 1 || len(declaration.ConcurrencyArr) != 0 || len(declaration.EventTriggers) != 0 {
 		t.Fatalf("incorrect adapter graph %+v", declaration)
 	}
+	if durable[0].EvictionPolicy != nil {
+		t.Fatal("review parent must retain its cancellation guard on its dedicated worker tier")
+	}
 	ingress, err := RegisterReviewIngress(offlineLifecycleClient(t), config, workflow, fixture.plan.Digest, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{})
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +124,9 @@ func TestReviewRegistration(t *testing.T) {
 	declaration, regular, durable, _ = ingress.Dump()
 	if len(declaration.ConcurrencyArr) != 1 || declaration.ConcurrencyArr[0].GetLimitStrategy().String() != "GROUP_ROUND_ROBIN" || len(regular) != 0 || len(durable) != 1 || declaration.Name != "_"+config.Name {
 		t.Fatalf("invalid ingress %+v", declaration)
+	}
+	if durable[0].EvictionPolicy != nil {
+		t.Fatal("ingress parent must retain its cancellation guard on its dedicated worker tier")
 	}
 	raw, err := json.Marshal(declaration)
 	if err != nil {

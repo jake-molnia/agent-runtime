@@ -1,0 +1,8 @@
+{
+  "name": "t3-worker-opencode2",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@opencode/cli": "2.0.26"
+  }
+}

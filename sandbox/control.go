@@ -221,6 +221,10 @@ func ready(obj *unstructured.Unstructured) (bool, error) {
 			continue
 		}
 		if condition["status"] == "True" {
+			observed, found, _ := unstructured.NestedInt64(condition, "observedGeneration")
+			if (found && observed != obj.GetGeneration()) || (!found && obj.GetGeneration() > 0) {
+				continue
+			}
 			return true, nil
 		}
 		switch condition["reason"] {

@@ -1,0 +1,166 @@
+{
+  "t3": {
+    "namespace": "t3-workspaces",
+    "storage": {
+      "size": "50Gi",
+      "storageClass": "REPLACE_STORAGE_CLASS",
+      "accessModes": [
+        "ReadWriteOnce"
+      ]
+    },
+    "workerContainer": "worker",
+    "port": 8083,
+    "podTemplate": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "t3-execution-worker"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "securityContext": {
+          "runAsNonRoot": false,
+          "runAsUser": 0,
+          "runAsGroup": 0,
+          "fsGroup": 0,
+          "fsGroupChangePolicy": "OnRootMismatch",
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "worker",
+            "image": "REPLACE_REGISTRY/t3-worker@sha256:REPLACE_DIGEST",
+            "imagePullPolicy": "IfNotPresent",
+            "ports": [
+              {
+                "name": "execution",
+                "containerPort": 8083
+              }
+            ],
+            "env": [
+              {
+                "name": "HOME",
+                "value": "/workspace/home"
+              },
+              {
+                "name": "CODEX_HOME",
+                "value": "/workspace/home/.codex"
+              },
+              {
+                "name": "T3_WORKSPACE_ROOT",
+                "value": "/workspace"
+              },
+              {
+                "name": "T3_WORKER_STATE_DIR",
+                "value": "/workspace/.t3-worker"
+              },
+              {
+                "name": "T3_GIT_CREDENTIALS_FILE",
+                "value": "/etc/t3-scm/credentials.json"
+              },
+              {
+                "name": "SANDBOX_CHROMIUM_SANDBOX",
+                "value": "disabled"
+              }
+            ],
+            "envFrom": [
+              {
+                "secretRef": {
+                  "name": "t3-execution-environment"
+                }
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "1",
+                "memory": "2Gi"
+              },
+              "limits": {
+                "cpu": "4",
+                "memory": "8Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ],
+                "add": [
+                  "CHOWN",
+                  "DAC_OVERRIDE",
+                  "FOWNER",
+                  "FSETID",
+                  "SETUID",
+                  "SETGID"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "workspace",
+                "mountPath": "/workspace"
+              },
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              },
+              {
+                "name": "shm",
+                "mountPath": "/dev/shm"
+              },
+              {
+                "name": "git-credentials",
+                "mountPath": "/etc/t3-scm",
+                "readOnly": true
+              }
+            ],
+            "readinessProbe": {
+              "tcpSocket": {
+                "port": "execution"
+              },
+              "initialDelaySeconds": 3,
+              "periodSeconds": 5
+            },
+            "startupProbe": {
+              "tcpSocket": {
+                "port": "execution"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {}
+          },
+          {
+            "name": "shm",
+            "emptyDir": {
+              "medium": "Memory",
+              "sizeLimit": "512Mi"
+            }
+          },
+          {
+            "name": "git-credentials",
+            "secret": {
+              "secretName": "t3-git-credentials",
+              "defaultMode": 288,
+              "items": [
+                {
+                  "key": "credentials.json",
+                  "path": "credentials.json"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

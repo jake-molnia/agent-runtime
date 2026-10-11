@@ -149,7 +149,17 @@ type backendError struct {
 	cause     error
 }
 
-func (err backendError) Error() string { return "agent " + err.operation + " failed" }
+func (err backendError) Error() string {
+	var provision *orchestration.ProvisionError
+	if err.operation == "provision" && errors.As(err.cause, &provision) {
+		message := "agent provision failed during " + provision.Phase()
+		if detail := provision.Diagnostic(); detail != "" {
+			message += ": " + detail
+		}
+		return message
+	}
+	return "agent " + err.operation + " failed"
+}
 func (err backendError) Unwrap() error { return err.cause }
 
 func boundedCleanup(ctx context.Context, operation func(context.Context) error, name string) error {
