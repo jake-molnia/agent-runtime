@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git python3 mak
 WORKDIR /src/t3
 COPY --from=t3src . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter t3 build:bundle
+RUN pnpm --filter t3 typecheck && pnpm --filter t3 build:bundle
 FROM worker-build AS worker-package
 # Deploy changes pnpm workspace state; keep it separate from the web build.
 # pnpm preserves the locked, patched native dependency closure in a portable package.
