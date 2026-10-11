@@ -138,7 +138,13 @@ func runDesktop(ctx context.Context, root string, onReady func([]string)) (err e
 	if chromiumSandbox == "disabled" {
 		browserArgs = append(browserArgs, "--no-sandbox")
 	}
-	start("chromium", append(browserArgs, "about:blank")...)
+	g.Go(func() error {
+		return runDesktopBrowser(lifetime, func() *exec.Cmd {
+			cmd := exec.Command("chromium", append(browserArgs, "about:blank")...)
+			cmd.Dir, cmd.Env = root, env
+			return cmd
+		})
+	})
 	start("computer-use")
 	start("markitdown-mcp", "--http", "--host", "127.0.0.1", "--port", "8932")
 	start("aiod", "start", "--host", "127.0.0.1", "--port", "18091", "--runtime-dir", filepath.Join(state, "aio"))

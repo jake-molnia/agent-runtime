@@ -123,6 +123,17 @@ func child(ctx context.Context, binary string, args ...string) error {
 }
 
 func runChild(ctx context.Context, cmd *exec.Cmd) error {
+	err := runChildUntilExit(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s exited", cmd.Path)
+}
+
+func runChildUntilExit(ctx context.Context, cmd *exec.Cmd) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Raw subprocess diagnostics can include credentials. Health endpoints and exit status are the public contract.
 	if err := cmd.Start(); err != nil {
@@ -141,7 +152,13 @@ func runChild(ctx context.Context, cmd *exec.Cmd) error {
 			<-done
 		}
 		return ctx.Err()
-	case <-done:
-		return fmt.Errorf("%s exited", cmd.Path)
+	case err := <-done:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			return fmt.Errorf("%s exited: %w", cmd.Path, err)
+		}
+		return nil
 	}
 }
