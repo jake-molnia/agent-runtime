@@ -39,7 +39,6 @@ spec:
           env:
             - {name: AGENT_RUNTIME_URL, value: 'http://t3-runtime.t3-control.svc.cluster.local:8084'}
             - {name: AGENT_RUNTIME_PROFILE, value: t3}
-            - {name: T3CODE_SANDBOX_IDE_ORIGIN, value: 'https://ide.example.com'}
             - name: AGENT_RUNTIME_TOKEN
               valueFrom:
                 secretKeyRef: {name: t3-runtime-secrets, key: t3-control-token}

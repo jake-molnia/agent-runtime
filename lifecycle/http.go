@@ -26,25 +26,6 @@ type Tasks interface {
 
 func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/ide-origins", func(w http.ResponseWriter, r *http.Request) {
-		var request IDERequest
-		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-		d.DisallowUnknownFields()
-		if err := d.Decode(&request); err != nil {
-			http.Error(w, "invalid request", 400)
-			return
-		}
-		if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
-			http.Error(w, "trailing request data", 400)
-			return
-		}
-		result, err := c.EnsureIDE(r.Context(), request)
-		if err != nil {
-			http.Error(w, "IDE origin unavailable", 409)
-			return
-		}
-		writeJSON(w, 200, result)
-	})
 	mux.HandleFunc("GET /v1/resources", func(w http.ResponseWriter, r *http.Request) {
 		if c.Resources == nil {
 			http.Error(w, "resources unavailable", 503)
@@ -144,12 +125,7 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 	})
 	gateway := http.NewServeMux()
 	gateway.Handle("/v1/execution/{profile}/{workspaceId}/{path...}", c.gateway())
-	ideProxy := c.ideProxy()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, idePrefix) {
-			ideProxy.ServeHTTP(w, r)
-			return
-		}
 		if strings.HasPrefix(r.URL.Path, "/v1/execution/") {
 			gateway.ServeHTTP(w, r)
 			return

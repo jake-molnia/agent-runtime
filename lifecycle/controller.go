@@ -35,9 +35,6 @@ func (c *Controller) Execute(ctx context.Context, r Request) (State, error) {
 		if err = c.Control.WaitWorkspaceAbsent(ctx, *s.Handle); err != nil {
 			return s, err
 		}
-		if err = c.deleteIDE(ctx, s); err != nil {
-			return s, err
-		}
 		if err = c.deleteSecret(ctx, s); err != nil {
 			return s, err
 		}
@@ -217,9 +214,6 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 			return s, err
 		}
 		s.Phase = "released"
-		if err = c.deleteIDE(ctx, s); err != nil {
-			return s, err
-		}
 		if err = c.deleteSecret(ctx, s); err != nil {
 			return s, err
 		}

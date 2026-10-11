@@ -108,11 +108,13 @@ Do not expose the runtime API or worker bearer tokens to browser clients.
 ## Open the sandbox IDE
 
 The existing T3 **Open in VS Code** action opens the current thread's sandbox IDE
-in a new browser tab. Set `T3CODE_SANDBOX_IDE_ORIGIN` in `web.yaml` to a dedicated
-base origin, for example `https://ide.example.com`. Configure wildcard DNS and
-TLS for `*.ide.example.com` and route those hosts to the central `t3-web` Service,
-preserving WebSocket upgrades. The application assigns each IDE session its own
-subdomain. Do not use the main T3 application origin for sandbox content.
+in a new browser tab under `/api/sandbox-ide/<session>/` on the T3 head's origin.
+Route that path to the same central `t3-web` Service and preserve WebSocket
+upgrades. This uses the head's existing hostname and TLS configuration; no
+per-sandbox DNS records or separate proxy service are required.
+
+The IDE shares the T3 head's browser origin. Session paths and cookies route
+requests to the selected workspace; they do not provide separate browser origins.
 
 T3 exchanges a short-lived bootstrap ticket for an IDE-only session cookie and
 proxies HTTP and WebSocket requests through the authenticated execution worker.
