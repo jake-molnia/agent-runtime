@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const gatewayCacheTTL = 5 * time.Second
@@ -15,6 +17,7 @@ type gatewayKey struct{ profile, workspace string }
 type gatewayFlightKey struct {
 	gatewayKey
 	authorization string
+	control       bool
 }
 type gatewayEntry struct {
 	access  Access
@@ -53,8 +56,18 @@ func bearerMatches(authorization, token string) bool {
 }
 
 func (c *Controller) gatewayAccess(ctx context.Context, profile, workspace, authorization string) (Access, int) {
+	return c.cachedAccess(ctx, profile, workspace, authorization, false)
+}
+
+// Only the pool-authenticated control HTTP handler calls this bounded read path.
+// Mutation and strong-observation callers continue to use Access directly.
+func (c *Controller) controlAccess(ctx context.Context, profile, workspace string) (Access, int) {
+	return c.cachedAccess(ctx, profile, workspace, "", true)
+}
+
+func (c *Controller) cachedAccess(ctx context.Context, profile, workspace, authorization string, control bool) (Access, int) {
 	for attempt := 0; attempt < 2; attempt++ {
-		access, status := c.gatewayAccessOnce(ctx, profile, workspace, authorization)
+		access, status := c.cachedAccessOnce(ctx, profile, workspace, authorization, control)
 		if status != 0 {
 			return access, status
 		}
@@ -62,10 +75,10 @@ func (c *Controller) gatewayAccess(ctx context.Context, profile, workspace, auth
 	return Access{}, http.StatusServiceUnavailable
 }
 
-func (c *Controller) gatewayAccessOnce(ctx context.Context, profile, workspace, authorization string) (Access, int) {
+func (c *Controller) cachedAccessOnce(ctx context.Context, profile, workspace, authorization string, control bool) (Access, int) {
 	cache := &c.gatewayCache
 	key := gatewayKey{profile, workspace}
-	flightKey := gatewayFlightKey{key, authorization}
+	flightKey := gatewayFlightKey{key, authorization, control}
 	cache.mu.Lock()
 	now := time.Now()
 	for k, entry := range cache.entries {
@@ -75,7 +88,7 @@ func (c *Controller) gatewayAccessOnce(ctx context.Context, profile, workspace, 
 	}
 	if entry, ok := cache.entries[key]; ok {
 		cache.mu.Unlock()
-		if !bearerMatches(authorization, entry.access.Token) {
+		if !control && !bearerMatches(authorization, entry.access.Token) {
 			return Access{}, http.StatusUnauthorized
 		}
 		return entry.access, http.StatusOK
@@ -99,13 +112,27 @@ func (c *Controller) gatewayAccessOnce(ctx context.Context, profile, workspace, 
 	flight := &gatewayFlight{done: make(chan struct{})}
 	cache.flights[flightKey] = flight
 	cache.mu.Unlock()
-	access, status := c.readGatewayAccess(ctx, profile, workspace, authorization)
+	var access Access
+	var status int
+	if control {
+		var err error
+		access, err = c.Access(ctx, profile, workspace)
+		status = http.StatusOK
+		if err != nil {
+			status = http.StatusServiceUnavailable
+			if apierrors.IsNotFound(err) {
+				status = http.StatusNotFound
+			}
+		}
+	} else {
+		access, status = c.readGatewayAccess(ctx, profile, workspace, authorization)
+	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	delete(cache.flights, flightKey)
 	if !flight.invalidated {
 		flight.access, flight.status = access, status
-		if status == http.StatusOK {
+		if status == http.StatusOK && access.State.Phase == "running" && access.Token != "" {
 			if cache.entries == nil {
 				cache.entries = make(map[gatewayKey]gatewayEntry)
 			}

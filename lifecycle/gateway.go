@@ -57,6 +57,12 @@ func (c *Controller) gateway() http.Handler {
 				}
 			},
 			FlushInterval: -1,
+			ModifyResponse: func(response *http.Response) error {
+				if response.StatusCode == http.StatusConflict {
+					c.invalidateGateway(profile, workspace)
+				}
+				return nil
+			},
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 				c.invalidateGateway(profile, workspace)
 				http.Error(w, "execution unavailable", http.StatusBadGateway)

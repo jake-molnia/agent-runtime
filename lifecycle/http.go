@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 type TaskStatus struct {
@@ -108,12 +106,8 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("GET /v1/workspaces/{workspaceId}", func(w http.ResponseWriter, r *http.Request) {
-		access, err := c.Access(r.Context(), r.URL.Query().Get("profile"), r.PathValue("workspaceId"))
-		if err != nil {
-			status := http.StatusServiceUnavailable
-			if apierrors.IsNotFound(err) {
-				status = http.StatusNotFound
-			}
+		access, status := c.controlAccess(r.Context(), r.URL.Query().Get("profile"), r.PathValue("workspaceId"))
+		if status != http.StatusOK {
 			http.Error(w, "workspace unavailable", status)
 			return
 		}
