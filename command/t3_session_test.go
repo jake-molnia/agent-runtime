@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -63,7 +65,7 @@ func TestT3ExecutionWorkerWaitsForIDE(t *testing.T) {
 	if err := os.WriteFile(ide, []byte("#!/bin/sh\nexec sleep 60\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(worker, []byte("#!/bin/sh\nprintf '%s' \"$DISPLAY $HOME\" > \"$T3_TEST_CAPTURE\"\nexec sleep 60\n"), 0700); err != nil {
+	if err := os.WriteFile(worker, []byte("#!/bin/sh\nprintf '%s' \"$DISPLAY $HOME $T3_IDE_PID\" > \"$T3_TEST_CAPTURE\"\nexec sleep 60\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("T3_IDE_BINARY", ide)
@@ -92,7 +94,15 @@ func TestT3ExecutionWorkerWaitsForIDE(t *testing.T) {
 	ready.Store(true)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(marker); err == nil && string(data) == ":99 "+filepath.Join(root, "home") {
+		if data, err := os.ReadFile(marker); err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) != 3 || fields[0] != ":99" || fields[1] != filepath.Join(root, "home") {
+				t.Fatalf("unexpected worker environment: %q", data)
+			}
+			pid, err := strconv.Atoi(fields[2])
+			if err != nil || pid <= 0 || syscall.Kill(pid, 0) != nil {
+				t.Fatalf("worker did not receive a live owned IDE PID: %q", fields[2])
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

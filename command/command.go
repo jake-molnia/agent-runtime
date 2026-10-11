@@ -131,6 +131,17 @@ func runChild(ctx context.Context, cmd *exec.Cmd) error {
 }
 
 func runChildUntilExit(ctx context.Context, cmd *exec.Cmd) error {
+	return runChildUntilExitStarted(ctx, cmd, nil)
+}
+
+func runChildStarted(ctx context.Context, cmd *exec.Cmd, started func(int)) error {
+	if err := runChildUntilExitStarted(ctx, cmd, started); err != nil {
+		return err
+	}
+	return fmt.Errorf("%s exited", cmd.Path)
+}
+
+func runChildUntilExitStarted(ctx context.Context, cmd *exec.Cmd, started func(int)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -138,6 +149,9 @@ func runChildUntilExit(ctx context.Context, cmd *exec.Cmd) error {
 	// Raw subprocess diagnostics can include credentials. Health endpoints and exit status are the public contract.
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("cannot start %s: %w", cmd.Path, err)
+	}
+	if started != nil {
+		started(cmd.Process.Pid)
 	}
 	defer syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	done := make(chan error, 1)

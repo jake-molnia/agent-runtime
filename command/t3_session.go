@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -53,8 +54,15 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 		"--user-data-dir", filepath.Join(state, "ide", "user-data"), "--extensions-dir", filepath.Join(state, "ide", "extensions"), root)
 	ide.Dir = root
 	ide.Env = t3IDEEnvironment(os.Environ(), desktop)
-	g.Go(func() error { return runChild(lifetime, ide) })
+	ideStarted := make(chan int, 1)
+	g.Go(func() error { return runChildStarted(lifetime, ide, func(pid int) { ideStarted <- pid }) })
 	g.Go(func() error {
+		var idePID int
+		select {
+		case idePID = <-ideStarted:
+		case <-lifetime.Done():
+			return lifetime.Err()
+		}
 		if err := waitDesktop(lifetime, "VS Code", func(ctx context.Context) error {
 			var health struct {
 				Status string `json:"status"`
@@ -71,7 +79,7 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 		}
 		worker := exec.Command(env("T3_WORKER_NODE", "node"), env("T3_WORKER_ENTRYPOINT", "/opt/t3/dist/execution-worker.mjs"))
 		worker.Dir = root
-		worker.Env = t3WorkerEnvironment(os.Environ(), desktop)
+		worker.Env = replaceEnvironment(t3WorkerEnvironment(os.Environ(), desktop), "T3_IDE_PID="+strconv.Itoa(idePID))
 		return runChild(lifetime, worker)
 	})
 	return g.Wait()
