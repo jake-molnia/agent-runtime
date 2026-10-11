@@ -195,13 +195,16 @@ def migrate_controller(pool, entry, persist, source, target, timeout):
     return migrated['request']['revision']
 
 
-def apply(db_path, pools_path, ledger_path, source, target, timeout=300):
+def apply(db_path, pools_path, ledger_path, source, target, timeout=300, successors=()):
     if source == target:
         raise MigrationError('source and target profiles must differ')
+    successors = set(successors)
+    if source in successors or target in successors:
+        raise MigrationError('successor profiles must differ from source and target')
     pools_config = json.loads(pools_path.read_text())
     pools = {pool['id']: pool for pool in pools_config['pools']}
-    if any(pool['profile'] != target for pool in pools.values()):
-        raise MigrationError('all pool defaults must name the target profile')
+    if any(pool['profile'] not in {target, *successors} for pool in pools.values()):
+        raise MigrationError('all pool defaults must name the target or a known successor profile')
     scope = {'database': str(db_path.resolve()), 'source': source, 'target': target,
              'pools': {key: value['url'] for key, value in pools.items()}}
     ledger_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -242,16 +245,27 @@ def apply(db_path, pools_path, ledger_path, source, target, timeout=300):
                     os.close(directory)
                 ledger = {'scope': scope, 'backup': str(backup), 'workspaces': {}}
                 save(ledger_path, ledger)
+            rows = db.execute('SELECT workspace_id,pool_id,profile_id,admission_revision,lifecycle_request_json FROM agent_runtime_workspaces').fetchall()
+            if any(row['profile_id'] not in {None, source, target, *successors} for row in rows):
+                raise MigrationError('workspace has an unexpected execution profile')
             if ledger.get('complete'):
                 if db.execute('SELECT 1 FROM agent_runtime_workspaces WHERE profile_id=? LIMIT 1', (source,)).fetchone():
                     raise MigrationError('completed migration has source-profile bindings')
                 return
             persist = lambda: save(ledger_path, ledger)
-            rows = db.execute('SELECT workspace_id,pool_id,profile_id,admission_revision,lifecycle_request_json FROM agent_runtime_workspaces').fetchall()
             for row in rows:
                 workspace = row['workspace_id']
-                if row['profile_id'] not in (None, source, target):
-                    raise MigrationError('workspace has an unexpected execution profile')
+                if row['profile_id'] in successors:
+                    entry = ledger['workspaces'].get(workspace)
+                    if entry:
+                        after = entry.get('after')
+                        if (not after or after['profile_id'] != target
+                                or row['pool_id'] != after['pool_id']
+                                or row['admission_revision'] < after['admission_revision']):
+                            raise MigrationError('successor workspace conflicts with legacy migration')
+                        entry['done'] = True
+                        persist()
+                    continue
                 if row['profile_id'] == target and workspace not in ledger['workspaces']:
                     continue
                 entry = ledger['workspaces'].setdefault(workspace, {'before': dict(row)})
@@ -306,10 +320,11 @@ def main():
     parser.add_argument('--ledger', type=Path, required=True)
     parser.add_argument('--from-profile', required=True)
     parser.add_argument('--to-profile', required=True)
+    parser.add_argument('--successor-profile', action='append', default=[])
     parser.add_argument('--apply', action='store_true', required=True)
     args = parser.parse_args()
     try:
-        apply(args.database,args.pools,args.ledger,args.from_profile,args.to_profile)
+        apply(args.database,args.pools,args.ledger,args.from_profile,args.to_profile,successors=args.successor_profile)
     except Exception as error:
         detail = str(error) if isinstance(error, MigrationError) else type(error).__name__
         parser.exit(1, 'Profile migration stopped: ' + detail + '\n')

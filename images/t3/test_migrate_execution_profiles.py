@@ -1,3 +1,4 @@
+from contextlib import closing
 import importlib.util
 import json
 from pathlib import Path
@@ -277,6 +278,133 @@ class MigrationTests(unittest.TestCase):
                 self.assertFalse((root/'ledger').with_suffix('.sqlite-backup.pending').exists())
             self.assertEqual(db.execute('SELECT pool_id,profile_id,admission_revision,lifecycle_request_json FROM agent_runtime_workspaces').fetchone(),('p','v2',23,None))
             db.close()
+
+
+class MigrationChainTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.database, self.pools = self.root/'db', self.root/'pools'
+        self.legacy, self.latest = self.root/'v2.json', self.root/'v3.json'
+        self.pools.write_text(json.dumps({'defaultPoolId':'p','pools':[
+            {'id':'p','profile':'v3','url':'http://controller','tokenFile':'unused'}]}))
+        self.controllers = {}
+        self.migrations = []
+        self.api = patch.object(migration, 'request', self.request)
+        self.api.start()
+        self.addCleanup(self.api.stop)
+
+    def seed(self, profiles):
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('CREATE TABLE agent_runtime_workspaces(workspace_id TEXT PRIMARY KEY,pool_id TEXT,profile_id TEXT,admission_revision INTEGER,lifecycle_request_json TEXT)')
+            for index, profile in enumerate(profiles):
+                workspace = str(index)
+                db.execute('INSERT INTO agent_runtime_workspaces VALUES (?,?,?,?,?)', (workspace,'p',profile,7,None))
+                self.controllers[workspace] = {'phase':'released','epoch':2,'profileHash':profile,
+                    'request':{'workspaceId':workspace,'profile':profile,'revision':7,'operationId':'old'},
+                    'completedOperation':'old'}
+
+    def request(self, pool, path, body=None):
+        if path.startswith('/v1/workspaces/'):
+            workspace = path.split('/')[3].split('?')[0]
+            current = self.controllers[workspace]
+            return (200, {'state':json.loads(json.dumps(current))}) if path.endswith('profile='+current['request']['profile']) else (409,None)
+        if path == '/v1/profile-migrations':
+            current = self.controllers[body['workspaceId']]
+            self.assertEqual(current['request']['profile'],body['fromProfile'])
+            self.migrations.append((body['workspaceId'],body['fromProfile'],body['toProfile']))
+            current['request']['profile'] = body['toProfile']
+            current['profileHash'] = body['toProfile']
+            return 200,json.loads(json.dumps(current))
+        self.fail('unexpected controller request '+path)
+
+    def run_legacy(self):
+        migration.apply(self.database,self.pools,self.legacy,'v1','v2',successors=['v3'])
+
+    def run_latest(self):
+        migration.apply(self.database,self.pools,self.latest,'v2','v3')
+
+    def test_fresh_install_then_v3_restart_without_legacy_ledger(self):
+        self.run_legacy()
+        self.run_latest()
+        self.assertFalse(self.database.exists())
+        self.assertFalse(self.legacy.exists())
+        self.seed(['v3'])
+        self.run_legacy()
+        self.run_latest()
+        self.assertEqual(self.migrations, [])
+        self.run_legacy()
+        self.run_latest()
+
+    def test_current_v2_migrates_only_latest_step(self):
+        self.seed(['v2'])
+        self.run_legacy()
+        self.run_latest()
+        self.assertEqual(self.migrations,[('0','v2','v3')])
+
+    def test_consistent_pre_v2_restore_and_mixed_chain(self):
+        self.seed(['v1','v2','v3'])
+        self.run_legacy()
+        self.run_latest()
+        self.run_legacy()
+        self.run_latest()
+        self.assertEqual(self.migrations,[('0','v1','v2'),('0','v2','v3'),('1','v2','v3')])
+        with closing(sqlite3.connect(self.database)) as db, db:
+            self.assertEqual(db.execute('SELECT DISTINCT profile_id FROM agent_runtime_workspaces').fetchall(),[('v3',)])
+        with closing(sqlite3.connect(self.legacy.with_suffix('.sqlite-backup'))) as db:
+            self.assertEqual(db.execute('SELECT profile_id FROM agent_runtime_workspaces WHERE workspace_id="0"').fetchone(),('v1',))
+
+    def test_completed_legacy_rejects_stale_restore_and_unknown_profile(self):
+        self.seed(['v1'])
+        self.run_legacy()
+        original = self.legacy.read_bytes()
+        for profile in ('v1','unknown'):
+            with self.subTest(profile=profile), closing(sqlite3.connect(self.database)) as db, db:
+                db.execute('UPDATE agent_runtime_workspaces SET profile_id=?',(profile,))
+                db.commit()
+                with self.assertRaises(migration.MigrationError):
+                    self.run_legacy()
+                self.assertEqual(self.legacy.read_bytes(),original)
+        self.assertEqual(len(self.migrations),1)
+
+    def test_unknown_profile_rejected_before_any_controller_mutation(self):
+        self.seed(['v1','unknown'])
+        with self.assertRaises(migration.MigrationError):
+            self.run_legacy()
+        self.assertEqual(self.migrations,[])
+
+    def test_inconsistent_controller_restore_fails_closed(self):
+        self.seed(['v1'])
+        self.controllers['0']['request']['profile'] = 'v3'
+        with self.assertRaises(migration.MigrationError):
+            self.run_legacy()
+        self.assertEqual(self.migrations,[])
+
+    def test_interrupted_legacy_record_accepts_known_successor_without_downgrade(self):
+        self.seed(['v1'])
+        save = migration.save
+        def stop_after_db_commit(path,value):
+            if path == self.legacy and any(e.get('done') for e in value.get('workspaces',{}).values()):
+                raise migration.MigrationError('interrupted after db commit')
+            save(path,value)
+        with patch.object(migration,'save',stop_after_db_commit):
+            with self.assertRaises(migration.MigrationError):
+                self.run_legacy()
+        self.run_latest()
+        self.run_legacy()
+        self.assertTrue(json.loads(self.legacy.read_text())['complete'])
+        self.assertEqual(self.migrations,[('0','v1','v2'),('0','v2','v3')])
+
+    def test_successor_must_not_discard_unfinished_or_conflicting_legacy_record(self):
+        self.seed(['v1'])
+        with patch.object(migration,'migrate_controller',side_effect=migration.MigrationError('before migration')):
+            with self.assertRaises(migration.MigrationError):
+                self.run_legacy()
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute("UPDATE agent_runtime_workspaces SET profile_id='v3'")
+        with self.assertRaisesRegex(migration.MigrationError,'conflicts with legacy'):
+            self.run_legacy()
 
 
 if __name__ == '__main__':
