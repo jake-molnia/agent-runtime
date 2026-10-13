@@ -41,8 +41,8 @@ func recurringFixture(t *testing.T) (configuredTestFixture, notebooks.Directory)
 }
 
 func TestRecurringDeclarationPinsCronInputAndSerializesRuns(t *testing.T) {
-	fixture, _ := recurringFixture(t)
-	schedule, err := RegisterConfiguredSchedule(offlineLifecycleClient(t), fixture.workflow, fixture.plan)
+	fixture, notes := recurringFixture(t)
+	schedule, err := RegisterConfiguredSchedule(offlineLifecycleClient(t), fixture.backend, fixture.store, fixture.root, fixture.plan, ConfiguredOptions{NotebookStore: notes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +61,12 @@ func TestRecurringDeclarationPinsCronInputAndSerializesRuns(t *testing.T) {
 	execution, _, _, _ := fixture.workflow.Dump()
 	if len(execution.CronTriggers) != 0 {
 		t.Fatal("revisioned execution owns a duplicate cron")
+	}
+	if !reflect.DeepEqual(declaration.ConcurrencyArr, execution.ConcurrencyArr) {
+		t.Fatal("generic and scheduled runs do not share notebook serialization")
+	}
+	if len(declaration.Tasks) != len(execution.Tasks) {
+		t.Fatal("schedule does not own the complete configured graph")
 	}
 	if len(execution.ConcurrencyArr) != 1 || !execution.ConcurrencyArr[0].GetIsTenantScoped() || execution.ConcurrencyArr[0].GetMaxRuns() != 1 || execution.ConcurrencyArr[0].GetLimitStrategy().String() != "CANCEL_NEWEST" {
 		t.Fatalf("notebook concurrency missing: %+v", execution.ConcurrencyArr)

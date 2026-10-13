@@ -22,6 +22,7 @@ type ReviewResult struct {
 	Configuration string                `json:"configuration"`
 	Resolved      githubreview.Resolved `json:"resolved"`
 	Publish       bool                  `json:"publish"`
+	State         ConfiguredState       `json:"state"`
 	Output        json.RawMessage       `json:"output,omitempty"`
 }
 
@@ -32,8 +33,9 @@ func ReviewLabels(config githubreview.Integration) map[string]*hatchet.DesiredWo
 	}
 	return labels
 }
-func RegisterReview(client *hatchet.Client, config githubreview.Integration, reload func() (githubreview.Integration, error), handler *githubreview.Handler, child *hatchet.Workflow, plan workflows.Snapshot, backend agentexec.Backend, store messages.Store) (*hatchet.Workflow, error) {
-	if client == nil || handler == nil || child == nil || reload == nil {
+
+func RegisterReview(client *hatchet.Client, config githubreview.Integration, reload func() (githubreview.Integration, error), handler *githubreview.Handler, root string, plan workflows.Snapshot, backend agentexec.Backend, store messages.Store, hooks ...ConfiguredHooks) (*hatchet.Workflow, error) {
+	if client == nil || handler == nil || reload == nil || root == "" || store == nil {
 		return nil, errors.New("review dependencies required")
 	}
 	if err := config.Validate(); err != nil {
@@ -44,6 +46,9 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 	}
 	if plan.Workflow.Name != config.Workflow {
 		return nil, errors.New("review workflow mismatch")
+	}
+	if plan.Workflow.Notebook {
+		return nil, errors.New("GitHub review workflows cannot use notebooks")
 	}
 	for _, step := range append(append([]string{}, config.CandidateSteps...), config.WriteupStep) {
 		if _, ok := plan.Workflow.Steps[step]; !ok {
@@ -62,91 +67,132 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 	if err != nil {
 		return nil, err
 	}
-	workflow := client.NewWorkflow(ConfiguredWorkflowName(config.Name, revision), hatchet.WithWorkflowVersion(revision))
-	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input map[string]any) (ReviewResult, error) {
+	load := func(digest string) (workflows.Snapshot, error) {
+		if digest != plan.Digest {
+			return workflows.Snapshot{}, errors.New("pinned review configuration changed; original worker required")
+		}
+		pinned, err := workflows.Read(root, digest)
+		if err != nil {
+			return pinned, err
+		}
+		if pinned.Workflow.Name != config.Workflow {
+			return pinned, errors.New("review workflow mismatch")
+		}
+		return pinned, nil
+	}
+	limit, strategy := int32(1), hatchet.GroupRoundRobin
+	options := []hatchet.WorkflowOption{hatchet.WithWorkflowVersion(revision), hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: reviewConcurrencyExpression, MaxRuns: &limit, LimitStrategy: &strategy}), hatchet.WithWorkflowIdempotency(hatchet.IdempotencyConfig{Expression: reviewIdempotencyExpression, TTL: 30 * 24 * time.Hour, Method: hatchet.IdempotencyMethodTTL})}
+	if config.NativeEvents {
+		events := []string{}
+		for _, action := range config.Actions {
+			events = append(events, "github:pull_request:"+action)
+		}
+		options = append(options, hatchet.WithWorkflowEvents(events...), hatchet.WithDefaultFilters(hatchet.DefaultFilter{Expression: "!input.pull_request.draft && input.pull_request.state == 'open'", Scope: config.Name}))
+	}
+	workflow := client.NewWorkflow(config.Name, options...)
+	resolveName := ConfiguredWorkflowName("resolve", revision)
+	resolve := workflow.NewTask(resolveName, func(ctx hatchet.Context, input map[string]any) (ReviewResult, error) {
+		result := ReviewResult{Configuration: revision, State: ConfiguredState{Digest: plan.Digest}}
 		raw, err := json.Marshal(input)
 		if err != nil {
-			return ReviewResult{}, err
+			return result, err
 		}
 		request, skip, err := config.Normalize(raw)
 		if err != nil {
-			return ReviewResult{}, err
+			return result, err
 		}
 		if skip {
-			return ReviewResult{Resolved: githubreview.Resolved{Skip: true}}, nil
+			result.Resolved.Skip = true
+			result.State.Skip = true
+			return result, nil
 		}
 		current, err := reload()
 		if err != nil {
-			return ReviewResult{}, err
+			return result, err
 		}
 		policy, err := current.Authorize(request.Review)
 		if err != nil {
-			return ReviewResult{}, err
-		}
-		resolved, err := handler.Resolve(ctx.GetContext(), request.Review, plan.Digest, ctx.WorkflowRunId())
-		if err != nil {
-			return ReviewResult{}, err
-		}
-		return ReviewResult{Resolved: resolved, Publish: request.Publish && policy.Publish, Configuration: revision}, nil
-	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
-	execute := workflow.NewDurableTask("review", func(ctx hatchet.DurableContext, _ map[string]any) (ReviewResult, error) {
-		var result ReviewResult
-		if err := ctx.StepOutput("resolve", &result); err != nil {
 			return result, err
 		}
-		resolved := result.Resolved
-		if !resolved.Skip && (resolved.Digest != plan.Digest || result.Configuration != revision) {
-			return result, errors.New("pinned review configuration changed; original worker required")
+		result.Resolved, err = handler.Resolve(ctx.GetContext(), request.Review, plan.Digest, ctx.WorkflowRunId())
+		if err != nil {
+			return result, err
 		}
-		if resolved.Skip {
+		result.Publish = request.Publish && policy.Publish
+		result.State.Skip = result.Resolved.Skip
+		if result.State.Skip {
 			return result, nil
 		}
-		input, err := json.Marshal(struct {
+		if _, err = load(result.State.Digest); err != nil {
+			return result, err
+		}
+		value, err := json.Marshal(struct {
 			Review githubreview.Input `json:"review"`
 			Prompt string             `json:"prompt"`
-		}{resolved.Input, resolved.Prompt})
+		}{result.Resolved.Input, result.Resolved.Prompt})
 		if err != nil {
 			return result, err
 		}
-		original := ctx.GetContext()
-		guarded, stopGuard, err := watchStage(original, 15*time.Second, func(checkCtx context.Context) error { return CheckReview(checkCtx, reload, handler, resolved.Input) })
-		if err != nil {
+		result.State.Input, err = service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: plan.Workflow.Name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
+		return result, err
+	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
+	readResult := func(ctx hatchet.Context) (ReviewResult, error) {
+		var result ReviewResult
+		if err := ctx.StepOutput(resolveName, &result); err != nil {
 			return result, err
 		}
-		defer stopGuard()
-		ctx.SetContext(guarded)
-		defer ctx.SetContext(original)
-		childResult, err := runChildWorkflow(ctx, client, child, ConfiguredInput{Digest: plan.Digest, Input: input}, ReviewLabels(config))
-		if err != nil {
+		if result.Configuration != revision || result.State.Digest != plan.Digest || (!result.Resolved.Skip && result.Resolved.Digest != plan.Digest) {
+			return result, errors.New("pinned review configuration changed; original worker required")
+		}
+		return result, nil
+	}
+	readState := func(ctx hatchet.Context) (ConfiguredState, error) {
+		result, err := readResult(ctx)
+		return result.State, err
+	}
+	graph := configuredStageGraph{current: plan, load: load, executor: executor, store: store}
+	stageName := func(id string) string { return ConfiguredWorkflowName("agent-"+id, revision) }
+	stages, err := graph.register(workflow, resolve, readState, stageName, append([]ConfiguredHooks{ReviewBeforeStep(reload, handler)}, hooks...)...)
+	if err != nil {
+		return nil, err
+	}
+	parents := []*hatchet.Task{resolve}
+	seen := map[string]bool{}
+	for _, id := range append(append(append([]string{}, config.CandidateSteps...), config.WriteupStep), plan.Workflow.Output) {
+		if !seen[id] {
+			parents = append(parents, stages[id])
+			seen[id] = true
+		}
+	}
+	reduceName := ConfiguredWorkflowName("reduce", revision)
+	reduce := workflow.NewTask(reduceName, func(ctx hatchet.Context, _ map[string]any) (ReviewResult, error) {
+		result, err := readResult(ctx)
+		if err != nil || result.Resolved.Skip {
 			return result, err
 		}
-		if err = ctx.GetContext().Err(); err != nil {
+		if _, err = load(result.State.Digest); err != nil {
 			return result, err
 		}
-		var state ConfiguredState
-		if err = childResult.TaskOutput("resolve").Into(&state); err != nil {
+		if err = CheckReview(ctx.GetContext(), reload, handler, result.Resolved.Input); err != nil {
 			return result, err
 		}
-		if state.Digest != plan.Digest {
-			return result, errors.New("review child digest mismatch")
-		}
-		read := func(step string) (json.RawMessage, error) {
+		read := func(id string) (json.RawMessage, error) {
 			var output ConfiguredResult
-			if err := childResult.TaskOutput(step).Into(&output); err != nil {
+			if err := ctx.StepOutput(stageName(id), &output); err != nil {
 				return nil, err
 			}
 			if output.Digest != plan.Digest {
 				return nil, errors.New("review output digest mismatch")
 			}
-			return configuredOutput(ctx.GetContext(), service, childResult.RunId, plan.Workflow.Name, state, plan, step, output.Message)
+			return configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), plan.Workflow.Name, result.State, plan, id, output.Message)
 		}
 		candidates := []json.RawMessage{}
-		for _, step := range config.CandidateSteps {
-			data, err := read(step)
+		for _, id := range config.CandidateSteps {
+			value, err := read(id)
 			if err != nil {
 				return result, err
 			}
-			candidates = append(candidates, data)
+			candidates = append(candidates, value)
 		}
 		wording, err := read(config.WriteupStep)
 		if err != nil {
@@ -156,18 +202,18 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 		if err != nil {
 			return result, err
 		}
-		return result, githubreview.ValidateResolvedOutput(resolved, result.Output)
-	}, hatchet.WithParents(resolve), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))
-	workflow.NewTask("publish", func(ctx hatchet.Context, input map[string]any) (githubreview.Outcome, error) {
+		return result, githubreview.ValidateResolvedOutput(result.Resolved, result.Output)
+	}, hatchet.WithParents(parents...), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
+	workflow.NewTask(ConfiguredWorkflowName("publish", revision), func(ctx hatchet.Context, _ map[string]any) (githubreview.Outcome, error) {
 		var result ReviewResult
-		if err := ctx.StepOutput("review", &result); err != nil {
+		if err := ctx.StepOutput(reduceName, &result); err != nil {
 			return githubreview.Outcome{}, err
 		}
-		if !result.Resolved.Skip && (result.Configuration != revision || result.Resolved.Digest != plan.Digest) {
+		if result.Configuration != revision || (!result.Resolved.Skip && result.Resolved.Digest != plan.Digest) {
 			return githubreview.Outcome{}, errors.New("pinned review configuration changed; original worker required")
 		}
 		return PublishReview(ctx.GetContext(), reload, handler, result)
-	}, hatchet.WithParents(execute), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(2*time.Minute))
+	}, hatchet.WithParents(reduce), hatchet.WithRetries(2), hatchet.WithExecutionTimeout(2*time.Minute))
 	return workflow, nil
 }
 func PublishReview(ctx context.Context, reload func() (githubreview.Integration, error), handler *githubreview.Handler, result ReviewResult) (githubreview.Outcome, error) {

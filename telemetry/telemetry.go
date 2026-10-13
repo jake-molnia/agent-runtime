@@ -34,13 +34,14 @@ const (
 	Tailnet   Phase = "tailnet_enroll"
 	Checkout  Phase = "checkout"
 	Harness   Phase = "harness_ready"
+	MCP       Phase = "mcp_ready"
 	Session   Phase = "session_create"
 	Prompt    Phase = "prompt_admit"
 	Execution Phase = "execution"
 	Cleanup   Phase = "cleanup"
 )
 
-var phases = map[Phase]bool{Initialize: true, Claim: true, Secrets: true, Identity: true, Runtime: true, Tailnet: true, Checkout: true, Harness: true, Session: true, Prompt: true, Execution: true, Cleanup: true}
+var phases = map[Phase]bool{Initialize: true, Claim: true, Secrets: true, Identity: true, Runtime: true, Tailnet: true, Checkout: true, Harness: true, MCP: true, Session: true, Prompt: true, Execution: true, Cleanup: true}
 
 type Options struct {
 	Service     string

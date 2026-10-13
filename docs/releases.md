@@ -5,7 +5,9 @@ The [image workflow](../.github/workflows/images.yml) publishes two GHCR package
 - `ghcr.io/jake-molnia/agent-runtime-worker`, the `worker` Dockerfile target.
 - `ghcr.io/jake-molnia/agent-runtime-sandbox`, the `sandbox` Dockerfile target.
 
-Both contain Linux AMD64 and ARM64 images. The sandbox includes OpenCode,
+Both contain Linux AMD64 and ARM64 images. The sandbox CLI uses the
+[source pin and MCP tool-refresh correction](../patches/README.md); its build
+checks native MCP readiness before publishing. The sandbox includes OpenCode,
 sandboxd, and Tailscale. The worker contains the Go runtime. Both images include
 the [pinned skill bundle](sandbox-skills.md), with no Nix environment. Package names derive
 from the GitHub repository name, so forks publish under their own owner.

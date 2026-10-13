@@ -67,8 +67,10 @@ overrides it; without an override, `run NAME` uses that default. Explicit `null`
 is a valid default and differs from an omitted input.
 
 An optional `schedule: {cron: "0 8 * * *", timezone: Europe/London}` adds a Hatchet
-cron trigger. Expressions have five fields; timezone defaults to UTC. A stable `schedule-<name>` dispatcher owns the cron trigger; immutable workflow
-revisions have no cron triggers of their own. The cron
+cron trigger. Expressions have five fields; timezone defaults to UTC. A stable `schedule-<name>` workflow owns the cron trigger and contains the same
+resolve, agent-stage DAG, and result tasks as manual execution. Its task actions
+include the immutable revision; no dispatch task holds a slot while waiting for
+another workflow. The cron
 input pins the complete workflow digest and default input. The agent/model/brief
 used by a submitted run cannot silently change when source files change. Local
 parser tests cover timezone transitions; actual timing is provided by Hatchet.
@@ -97,7 +99,7 @@ The runtime exposes reports through Hatchet and `runs result`; sending to anothe
 channel requires a configured tool or external consumer. Output persistence does
 not guarantee exactly-once external actions.
 
-Removing `schedule` and restarting the worker updates the stable dispatcher to
+Removing `schedule` and restarting the worker updates the stable scheduled workflow to
 clear its triggers. Remove cron schedules through Hatchet when retiring a workflow. Removing its YAML
 alone does not establish that existing server-side schedules have been deleted.
 Keep compatible workers and snapshots for runs that are already queued.

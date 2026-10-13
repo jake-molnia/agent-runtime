@@ -7,9 +7,10 @@ Role instructions, schemas, and bundled graphs belong to this runtime.
 Workflows are opt-in configuration, including simple cron-triggered agents with
 durable notebooks. Agents investigate using the sandbox harness and deployment-selected MCP tools.
 
-OpenCode V2 is the only supported agent harness. The sandbox installs the upstream
-`@opencode/cli` package pinned to 2.0.26 and exposes its `opencode` executable on
-`PATH`. `OPENCODE_BINARY` can select another path to an OpenCode V2 binary.
+OpenCode V2 is the only supported agent harness. The sandbox builds OpenCode
+2.0.26 from a checksum-pinned source archive with
+a [tool-refresh correction](patches/README.md) and exposes its `opencode` executable
+on `PATH`. `OPENCODE_BINARY` can select another path to an OpenCode V2 binary.
 
 ## Start with a preset
 

@@ -51,7 +51,7 @@ func TestReadyMCP(t *testing.T) {
 			if (err == nil) != test.valid {
 				t.Fatalf("readiness: %v", err)
 			}
-			if calls < 1 || calls > 2 {
+			if calls < 2 || calls > 3 {
 				t.Fatal("unexpected network calls")
 			}
 		})

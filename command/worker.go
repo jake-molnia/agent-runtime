@@ -127,7 +127,7 @@ func worker(ctx context.Context) error {
 		}
 		defer closeReview()
 	}
-	var reviewChild *hatchet.Workflow
+	var reviewWorkflow *hatchet.Workflow
 	registered := make([]hatchet.WorkflowBase, 0, len(plans))
 	for _, plan := range plans {
 		hooks := []hatchetbridge.ConfiguredHooks{}
@@ -144,31 +144,26 @@ func worker(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		schedule, err := hatchetbridge.RegisterConfiguredSchedule(client, workflow, plan)
+		schedule, err := hatchetbridge.RegisterConfiguredSchedule(client, backend, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan, hatchetbridge.ConfiguredOptions{Hooks: hooks, NotebookStore: notes})
 		if err != nil {
 			return err
 		}
 		registered = append(registered, workflow, schedule)
 		if reviewsEnabled && plan.Workflow.Name == reviewConfig.Workflow {
-			reviewChild = workflow
+			reviewWorkflow, err = hatchetbridge.RegisterReview(client, reviewConfig, reloadReview, handler, snapshots, plan, backend, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, hatchetbridge.ConfiguredHooks{BeforeStep: reviewCheckoutStep})
+			if err != nil {
+				return err
+			}
 		}
 	}
 	var webhook http.Handler
 	labels := map[string]any{}
 	if reviewsEnabled {
-		if reviewChild == nil {
+		if reviewWorkflow == nil {
 			return errors.New("configured review workflow missing")
 		}
-		adapter, err := hatchetbridge.RegisterReview(client, reviewConfig, reloadReview, handler, reviewChild, plans[reviewConfig.Workflow], engine, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")})
-		if err != nil {
-			return err
-		}
-		ingress, err := hatchetbridge.RegisterReviewIngress(client, reviewConfig, adapter, plans[reviewConfig.Workflow].Digest, reloadReview, handler)
-		if err != nil {
-			return err
-		}
-		registered = append(registered, adapter, ingress)
-		webhook, err = reviewWebhook(reviewConfig, ingress)
+		registered = append(registered, reviewWorkflow)
+		webhook, err = reviewWebhook(reviewConfig, reviewWorkflow)
 		if err != nil {
 			return err
 		}

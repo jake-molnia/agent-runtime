@@ -15,6 +15,13 @@ func (client *Client) ReadyMCP(ctx context.Context, directory string, servers []
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	query := url.Values{"location[directory]": {directory}}
+	// Integration discovery waits for this location's plugin activation; the
+	// MCP endpoints in OpenCode 2.0.26 can otherwise see an empty registry.
+	activation, err := client.Do(ctx, http.MethodGet, "/api/integration", Arguments{Query: query})
+	if err != nil {
+		return errors.New("approved MCP activation unavailable")
+	}
+	activation.Body.Close()
 	for _, server := range servers {
 		response, err := client.Do(ctx, http.MethodPost, "/api/experimental/mcp/{server}/connect", Arguments{Path: map[string]string{"server": server}, Query: query})
 		if err != nil {
@@ -44,12 +51,5 @@ func (client *Client) ReadyMCP(ctx context.Context, directory string, servers []
 			return errors.New("approved MCP is not connected; credentials or broker unavailable")
 		}
 	}
-	timer := time.NewTimer(150 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return ctx.Err()
 }
