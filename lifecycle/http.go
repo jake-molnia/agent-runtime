@@ -34,6 +34,15 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 			http.Error(w, "resources unavailable", 503)
 			return
 		}
+		if name := r.URL.Query().Get("profile"); name != "" {
+			profile, ok := c.Profiles[name]
+			if !ok {
+				http.Error(w, "unknown execution profile", http.StatusBadRequest)
+				return
+			}
+			// Unavailable or unsupported reservation inventory remains unknown, not zero.
+			snapshot.RequestCapacity, _ = ProfileRequestCapacity(r.Context(), c.Control.API, name, profile)
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, 200, snapshot)
 	})
