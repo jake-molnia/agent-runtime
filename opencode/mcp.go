@@ -56,6 +56,25 @@ func (client *Client) ReadyMCP(ctx context.Context, directory string, servers []
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	query := url.Values{"location[directory]": {directory}}
+	for _, server := range servers {
+		if !mcpName.MatchString(server) {
+			return mcpFailure(server, "configuration", "invalid", 0, nil)
+		}
+	}
+	// Wait for the location's plugins before querying its MCP inventory.
+	activation, err := client.Do(ctx, http.MethodGet, "/api/integration", Arguments{Query: query})
+	if err != nil {
+		code := 0
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
+			code = httpErr.Status
+		}
+		return mcpFailure(servers[0], "activation", "unavailable", code, err)
+	}
+	activation.Body.Close()
+	if err := ctx.Err(); err != nil {
+		return mcpFailure(servers[0], "activation", "cancelled", 0, err)
+	}
 	inventory := func(server, stage string) (mcpInventory, error) {
 		value, err := Decode[mcpInventory](client.Do(ctx, http.MethodGet, "/api/mcp", Arguments{Query: query}))
 		if err != nil {
@@ -83,9 +102,6 @@ func (client *Client) ReadyMCP(ctx context.Context, directory string, servers []
 		}
 	}
 	for _, server := range servers {
-		if !mcpName.MatchString(server) {
-			return mcpFailure(server, "configuration", "invalid", 0, nil)
-		}
 		// OpenCode's location can be ready before its configured MCP inventory loads.
 		// A connect before discovery gets McpServerNotFoundError even with valid config.
 		for {
@@ -152,5 +168,5 @@ func (client *Client) ReadyMCP(ctx context.Context, directory string, servers []
 			}
 		}
 	}
-	return nil
+	return ctx.Err()
 }

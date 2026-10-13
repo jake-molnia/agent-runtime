@@ -3,10 +3,12 @@ package hatchetbridge
 import (
 	"context"
 	"encoding/json"
-	"github.com/google/cel-go/cel"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/google/cel-go/cel"
 	"github.com/jake-molnia/agent-runtime/githubreview"
 )
 
@@ -106,24 +108,41 @@ func TestReviewRegistration(t *testing.T) {
 	fixture := newConfiguredTestFixture(t)
 	config := reviewTestPolicy()
 	config.Workflow = fixture.plan.Workflow.Name
-	workflow, err := RegisterReview(offlineLifecycleClient(t), config, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{}, fixture.workflow, fixture.plan, fixture.backend, fixture.store)
+	workflow, err := RegisterReview(offlineLifecycleClient(t), config, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{}, fixture.root, fixture.plan, fixture.backend, fixture.store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	declaration, regular, durable, _ := workflow.Dump()
-	if len(regular) != 2 || len(durable) != 1 || len(declaration.ConcurrencyArr) != 0 || len(declaration.EventTriggers) != 0 {
-		t.Fatalf("incorrect adapter graph %+v", declaration)
+	if len(regular) != 3 || len(durable) != len(fixture.plan.Workflow.Steps) || len(declaration.EventTriggers) != 0 {
+		t.Fatalf("incorrect review graph %+v", declaration)
 	}
-	if durable[0].EvictionPolicy != nil {
-		t.Fatal("review parent must retain its cancellation guard on its dedicated worker tier")
+	if len(declaration.ConcurrencyArr) != 1 || declaration.ConcurrencyArr[0].GetLimitStrategy().String() != "GROUP_ROUND_ROBIN" || declaration.Name != "_"+config.Name {
+		t.Fatalf("invalid admission %+v", declaration)
 	}
-	ingress, err := RegisterReviewIngress(offlineLifecycleClient(t), config, workflow, fixture.plan.Digest, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{})
+	revision, err := ReviewRevision(config, fixture.plan.Digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	declaration, regular, durable, _ = ingress.Dump()
-	if len(declaration.ConcurrencyArr) != 1 || declaration.ConcurrencyArr[0].GetLimitStrategy().String() != "GROUP_ROUND_ROBIN" || len(regular) != 0 || len(durable) != 1 || declaration.Name != "_"+config.Name {
-		t.Fatalf("invalid ingress %+v", declaration)
+	taskName := func(role string) string { return ConfiguredWorkflowName(role, revision) }
+	parents := map[string][]string{
+		taskName("resolve"):           nil,
+		taskName("agent-review"):      {taskName("resolve")},
+		taskName("agent-adversarial"): {taskName("resolve")},
+		taskName("agent-verify"):      {taskName("resolve"), taskName("agent-review"), taskName("agent-adversarial")},
+		taskName("reduce"):            {taskName("resolve"), taskName("agent-review"), taskName("agent-adversarial"), taskName("agent-verify")},
+		taskName("publish"):           {taskName("reduce")},
+	}
+	for _, task := range declaration.Tasks {
+		want, exists := parents[task.ReadableId]
+		actual := append([]string(nil), task.Parents...)
+		slices.Sort(actual)
+		slices.Sort(want)
+		if !exists || !reflect.DeepEqual(actual, want) {
+			t.Errorf("%s parents = %v, want %v", task.ReadableId, actual, want)
+		}
+		if task.IsDurable != strings.HasPrefix(task.ReadableId, "agent-") {
+			t.Errorf("only configured agent stages may consume durable slots: %+v", task)
+		}
 	}
 	if durable[0].EvictionPolicy != nil {
 		t.Fatal("ingress parent must retain its cancellation guard on its dedicated worker tier")
@@ -136,52 +155,100 @@ func TestReviewRegistration(t *testing.T) {
 		t.Fatalf("missing 30-day idempotency %s", raw)
 	}
 	config.CandidateSteps = []string{"missing"}
-	if _, err = RegisterReview(offlineLifecycleClient(t), config, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{}, fixture.workflow, fixture.plan, fixture.backend, fixture.store); err == nil {
+	if _, err = RegisterReview(offlineLifecycleClient(t), config, func() (githubreview.Integration, error) { return config, nil }, &githubreview.Handler{}, fixture.root, fixture.plan, fixture.backend, fixture.store); err == nil {
 		t.Fatal("missing evidence step accepted")
 	}
 }
 
 type reviewTaskContext struct {
 	configuredTestContext
-	raw json.RawMessage
+	raw  json.RawMessage
+	base context.Context
+}
+
+func (ctx reviewTaskContext) GetContext() context.Context {
+	if ctx.base != nil {
+		return ctx.base
+	}
+	return context.Background()
 }
 
 func (ctx reviewTaskContext) WorkflowInput(target any) error { return json.Unmarshal(ctx.raw, target) }
-func TestReviewPinsResolutionBeforeDurableChild(t *testing.T) {
-	fixture := newConfiguredTestFixture(t)
-	config := reviewTestPolicy()
-	config.Workflow = fixture.plan.Workflow.Name
-	input := githubreview.Input{RepositoryID: 2, InstallationID: 1, Repository: "owner/repo", Number: 7, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), DeliveryID: "request-1"}
-	api := &reviewTestAPI{current: githubreview.PullRequest{InstallationID: 1, RepositoryID: 2, Repository: "owner/repo", Number: 7, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, State: "open"}}
-	handler, _ := githubreview.NewHandler(api, reviewTestStore{})
-	workflow, err := RegisterReview(offlineLifecycleClient(t), config, func() (githubreview.Integration, error) { return config, nil }, handler, fixture.workflow, fixture.plan, fixture.backend, fixture.store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	callbacks := dagTestCallbacks(t, workflow)
-	raw, _ := json.Marshal(githubreview.Request{Review: input})
-	ctx := reviewTaskContext{configuredTestContext: configuredTestContext{outputs: map[string]any{}, run: "outer-run"}, raw: raw}
-	output, err := callbacks["resolve"](ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := output.(ReviewResult)
-	if result.Publish || result.Configuration == "" || result.Resolved.Digest != fixture.plan.Digest {
-		t.Fatalf("incorrect pinned state %+v", result)
-	}
-	result.Configuration = "different-registration"
-	ctx.outputs["resolve"] = result
-	if _, err = callbacks["review"](ctx); err == nil || !strings.Contains(err.Error(), "pinned review configuration changed") {
-		t.Fatalf("accepted replay under changed configuration: %v", err)
-	}
-	api.current.Draft = true
-	output, err = callbacks["resolve"](ctx)
-	if err != nil || !output.(ReviewResult).Resolved.Skip {
-		t.Fatalf("draft not skipped: %+v %v", output, err)
-	}
-	ctx.outputs["resolve"] = output
-	if _, err = callbacks["review"](ctx); err != nil {
-		t.Fatalf("skipped run started child: %v", err)
+func TestReviewPinsResolutionThroughConfiguredGraph(t *testing.T) {
+	for _, scenario := range []string{"dry-run", "publish", "skip"} {
+		t.Run(scenario, func(t *testing.T) {
+			fixture := newConfiguredTestFixture(t)
+			fixture.backend.outputs["review"] = json.RawMessage(`{"summary":"Review","findings":[{"priority":"P2","path":"a.go","line":1,"title":"Fix","explanation":"This breaks the caller."}],"limitations":""}`)
+			fixture.backend.outputs["adversarial"] = json.RawMessage(`{"summary":"Checked","findings":[],"limitations":""}`)
+			fixture.backend.outputs["verify"] = json.RawMessage(`{"assessment":"Review complete","findings":[{"sources":[0],"title":"Fix","explanation":"This breaks the caller."}]}`)
+			config := reviewTestPolicy()
+			config.Workflow = fixture.plan.Workflow.Name
+			input := githubreview.Input{RepositoryID: 2, InstallationID: 1, Repository: "owner/repo", Number: 7, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), DeliveryID: "request-1"}
+			api := &reviewTestAPI{current: githubreview.PullRequest{InstallationID: 1, RepositoryID: 2, Repository: "owner/repo", Number: 7, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, State: "open", Draft: scenario == "skip"}}
+			handler, _ := githubreview.NewHandler(api, reviewTestStore{})
+			workflow, err := RegisterReview(offlineLifecycleClient(t), config, func() (githubreview.Integration, error) { return config, nil }, handler, fixture.root, fixture.plan, fixture.backend, fixture.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revision, err := ReviewRevision(config, fixture.plan.Digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskName := func(role string) string { return ConfiguredWorkflowName(role, revision) }
+			callbacks := dagTestCallbacks(t, workflow)
+			raw, _ := json.Marshal(githubreview.Request{Review: input, Publish: scenario == "publish"})
+			ctx := reviewTaskContext{configuredTestContext: configuredTestContext{outputs: map[string]any{}, run: "review-run"}, raw: raw}
+			run := func(role string) any {
+				t.Helper()
+				output, err := callbacks[taskName(role)](ctx)
+				if err != nil {
+					t.Fatalf("%s: %v", role, err)
+				}
+				ctx.outputs[taskName(role)] = output
+				return output
+			}
+			result := run("resolve").(ReviewResult)
+			if result.Configuration != revision || result.State.Digest != fixture.plan.Digest || result.State.Skip != (scenario == "skip") || result.Publish != (scenario == "publish") {
+				t.Fatalf("incorrect pinned state %+v", result)
+			}
+			changed := result
+			changed.Configuration = "different-registration"
+			ctx.outputs[taskName("resolve")] = changed
+			if _, err = callbacks[taskName("agent-review")](ctx); err == nil || !strings.Contains(err.Error(), "pinned review configuration changed") {
+				t.Fatalf("accepted replay under changed configuration: %v", err)
+			}
+			ctx.outputs[taskName("resolve")] = result
+			run("agent-review")
+			run("agent-adversarial")
+			run("agent-verify")
+			if scenario != "skip" {
+				original := ctx.outputs[taskName("agent-review")]
+				ctx.outputs[taskName("agent-review")] = ctx.outputs[taskName("agent-adversarial")]
+				if _, err = callbacks[taskName("reduce")](ctx); err == nil || !strings.Contains(err.Error(), "step output identity mismatch") {
+					t.Fatalf("accepted another stage's message: %v", err)
+				}
+				ctx.outputs[taskName("agent-review")] = original
+			}
+			reduced := run("reduce").(ReviewResult)
+			if scenario != "skip" {
+				configuredTestJSON(t, reduced.Output, json.RawMessage(`{"summary":"Review complete","findings":[{"path":"a.go","line":1,"body":"[P2] Fix\n\nThis breaks the caller."}]}`))
+			}
+			outcome := run("publish").(githubreview.Outcome)
+			want, calls, publications := "dry-run", 3, 0
+			if scenario == "publish" {
+				want, publications = "published", 1
+			} else if scenario == "skip" {
+				want, calls = "skipped", 0
+			}
+			if outcome.Status != want || len(fixture.backend.calls) != calls || api.created != publications {
+				t.Fatalf("outcome %+v, agent calls %d, publications %d", outcome, len(fixture.backend.calls), api.created)
+			}
+			for _, call := range fixture.backend.calls {
+				if call.message.ContextID != ctx.run || call.message.TaskID != "review" && call.message.TaskID != "adversarial" && call.message.TaskID != "verify" {
+					t.Fatalf("logical message identity changed: %+v", call.message)
+				}
+			}
+		})
 	}
 }
 

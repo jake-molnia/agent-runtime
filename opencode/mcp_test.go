@@ -54,7 +54,7 @@ func TestReadyMCP(t *testing.T) {
 			if (err == nil) != test.valid {
 				t.Fatalf("readiness: %v", err)
 			}
-			if calls < 1 || calls > 6 {
+			if calls < 2 || calls > 7 {
 				t.Fatal("unexpected network calls")
 			}
 		})
@@ -78,7 +78,15 @@ func TestReadyMCPNoServersAndCancelled(t *testing.T) {
 
 func TestReadyMCPWaitsForColdLocationDiscovery(t *testing.T) {
 	reads, connects := 0, 0
+	activated := false
 	client, err := New("http://runtime.invalid", nil, mcpTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/api/integration" {
+			activated = true
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		}
+		if !activated {
+			t.Fatal("inventory raced plugin activation")
+		}
 		body := `{"data":[]}`
 		code := 200
 		if r.Method == http.MethodPost {
@@ -120,7 +128,7 @@ func TestReadyMCPReportsFinitePolicyFailureWithoutRetryOrSecretText(t *testing.T
 	}
 	err = client.ReadyMCP(t.Context(), "/workspace", []string{"broker"})
 	var diagnostic *MCPReadinessError
-	if !errors.As(err, &diagnostic) || diagnostic.httpStatus != 403 || diagnostic.state != "failed" || calls != 1 {
+	if !errors.As(err, &diagnostic) || diagnostic.httpStatus != 403 || diagnostic.state != "failed" || calls != 2 {
 		t.Fatalf("policy failure not preserved safely: %v calls=%d", err, calls)
 	}
 	if strings.Contains(err.Error(), "private") {

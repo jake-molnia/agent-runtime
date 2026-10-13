@@ -88,6 +88,7 @@ jobs:
         run: |
           docker buildx build --load --platform linux/amd64 --target "$TARGET" --tag "agent-runtime-check:$TARGET" .
           if [[ "$TARGET" == sandbox ]]; then
+            docker buildx build --platform linux/amd64 --target verify-opencode .
             docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
               test "$(id -u)" -eq 0
               touch /root/agent-runtime-root-check
