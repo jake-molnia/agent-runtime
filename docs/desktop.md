@@ -10,7 +10,7 @@ Playwright MCP is pinned to `0.0.83`. Document conversion uses
 `markitdown-mcp==0.0.1a7` and `markitdown==0.1.8`.
 The generic Hatchet worker image contains no desktop services. The T3 execution
 worker image additionally starts a browser IDE through code-server, as described
-in the [T3 deployment guide](../deploy/t3/README.md). Jupyter is not installed.
+in the [T3 fork](https://github.com/jake-molnia/t3code). Jupyter is not installed.
 
 The image uses AIO's standalone daemons with our existing Debian image.
 This keeps the upstream tool implementations while giving `agent-runtime` one

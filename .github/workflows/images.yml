@@ -3,7 +3,7 @@ name: Container images
 on:
   pull_request:
   push:
-    branches: [main, t3/sandbox-session-lifecycle]
+    branches: [main]
     tags: ['v*']
 
 permissions:
