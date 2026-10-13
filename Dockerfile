@@ -11,6 +11,17 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags=
 
 FROM tailscale/tailscale:v1.102.4@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3 AS tailscale
 
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS opencode
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git patch \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY upstream.json ./
+COPY scripts/build-opencode.sh scripts/
+COPY patches/opencode-mcp-tool-refresh.patch patches/
+ARG TARGETARCH
+RUN scripts/build-opencode.sh "$TARGETARCH" /out
+
 FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS skills
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -29,12 +40,16 @@ USER 1000:1000
 ENTRYPOINT ["agent-runtime"]
 CMD ["worker"]
 
+FROM build AS verify-opencode
+COPY --from=opencode /out/opencode /usr/local/bin/opencode
+RUN AGENT_RUNTIME_TEST_OPENCODE_BINARY=/usr/local/bin/opencode go test ./command \
+    -run '^TestOpenCodeNativeMCPIntegration/(exact_allowed|catalog_revoked|catalog_other_server)$' -count=1
+
 FROM node:26.9.0-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bdcd73c103b096988922d7 AS sandbox
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git python3 ripgrep tini \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global --allow-scripts=@opencode/cli --no-audit --no-fund @opencode/cli@2.0.26 \
-    && npm cache clean --force \
     && mkdir /workspace
+COPY --from=opencode /out/opencode /usr/local/bin/opencode
 COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles

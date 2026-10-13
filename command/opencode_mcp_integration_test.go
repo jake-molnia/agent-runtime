@@ -203,8 +203,8 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			}))
 			t.Cleanup(provider.Close)
 			root := t.TempDir()
-			workspace = filepath.Join(root, "workspace")
-			if err := os.Mkdir(workspace, 0700); err != nil {
+			workspace = filepath.Join(root, "workspace", "checkout")
+			if err := os.MkdirAll(workspace, 0700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(workspace, "native-read"), []byte("WORKSPACE_READ_SENTINEL"), 0600); err != nil {
@@ -309,7 +309,7 @@ profiles:
 			if err != nil {
 				t.Fatal(err)
 			}
-			supervisor := &runtimeapi.Supervisor{Root: workspace, OpenCodeBinary: binary}
+			supervisor := &runtimeapi.Supervisor{Root: filepath.Dir(workspace), OpenCodeBinary: binary}
 			_ = supervisor.Handler(ctx)
 			t.Cleanup(func() {
 				cancel()

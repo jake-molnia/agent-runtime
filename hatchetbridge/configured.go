@@ -22,6 +22,7 @@ type ConfiguredInput struct {
 }
 
 type ConfiguredState struct {
+	Skip   bool               `json:"skip,omitempty"`
 	Digest string             `json:"digest"`
 	Input  messages.Reference `json:"input"`
 }
@@ -73,6 +74,10 @@ type ConfiguredOptions struct {
 }
 
 func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot, settings ...ConfiguredOptions) (*hatchet.Workflow, error) {
+	return registerConfiguredWorkflow(client, backend, store, root, current, ConfiguredWorkflowName(current.Workflow.Name, current.Digest), func(id string) string { return id }, nil, settings...)
+}
+
+func registerConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot, workflowName string, taskName func(string) string, workflowOptions []hatchet.WorkflowOption, settings ...ConfiguredOptions) (*hatchet.Workflow, error) {
 	if client == nil || store == nil || root == "" {
 		return nil, errors.New("configured workflow dependencies required")
 	}
@@ -97,10 +102,6 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 	if _, err := configuredService(current, executor, store); err != nil {
 		return nil, err
 	}
-	order, err := current.Order()
-	if err != nil {
-		return nil, err
-	}
 	name := current.Workflow.Name
 	load := func(digest string) (workflows.Snapshot, error) {
 		if digest != current.Digest {
@@ -115,13 +116,13 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		}
 		return plan, nil
 	}
-	options := []hatchet.WorkflowOption{hatchet.WithWorkflowVersion(current.Digest)}
+	options := append([]hatchet.WorkflowOption{hatchet.WithWorkflowVersion(current.Digest)}, workflowOptions...)
 	if current.Workflow.Notebook {
 		limit, strategy := int32(1), hatchet.CancelNewest
 		options = append(options, hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: `"` + name + `"`, MaxRuns: &limit, LimitStrategy: &strategy, Name: fmt.Sprintf("notebook-%x", sha256.Sum256([]byte(notebookStore.Root+"\x00"+name))), IsTenantScoped: true}))
 	}
-	workflow := client.NewWorkflow(ConfiguredWorkflowName(name, current.Digest), options...)
-	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
+	workflow := client.NewWorkflow(workflowName, options...)
+	resolve := workflow.NewTask(taskName("resolve"), func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
 		plan, err := load(input.Digest)
 		if err != nil {
 			return ConfiguredState{}, err
@@ -157,9 +158,65 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
 		return ConfiguredState{Digest: input.Digest, Input: ref}, err
 	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
+	graph := configuredStageGraph{current: current, load: load, executor: executor, store: store}
+	tasks, err := graph.register(workflow, resolve, func(ctx hatchet.Context) (ConfiguredState, error) {
+		var state ConfiguredState
+		err := ctx.StepOutput(resolve.GetName(), &state)
+		return state, err
+	}, taskName, hooks...)
+	if err != nil {
+		return nil, err
+	}
+	workflow.NewTask(taskName("result"), func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredResult, error) {
+		var state ConfiguredState
+		if err := ctx.StepOutput(taskName("resolve"), &state); err != nil {
+			return ConfiguredResult{}, err
+		}
+		plan, err := load(state.Digest)
+		if err != nil {
+			return ConfiguredResult{}, err
+		}
+		if plan.Workflow.Output != current.Workflow.Output {
+			return ConfiguredResult{}, errors.New("pinned output step changed; compatible worker required")
+		}
+		var result ConfiguredResult
+		if err := ctx.StepOutput(taskName(plan.Workflow.Output), &result); err != nil {
+			return result, err
+		}
+		if result.Digest != state.Digest {
+			return ConfiguredResult{}, errors.New("result workflow identity mismatch")
+		}
+		service, err := configuredService(plan, executor, store)
+		if err != nil {
+			return result, err
+		}
+		result.Value, err = configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), name, state, plan, plan.Workflow.Output, result.Message)
+		if err == nil && plan.Workflow.Notebook {
+			var record notebooks.Record
+			record, err = notebookStore.Commit(ctx.GetContext(), name, ctx.WorkflowRunId(), plan.Digest, result.Value)
+			result.NotebookRevision = record.Revision
+		}
+		return result, err
+	}, hatchet.WithParents(resolve, tasks[current.Workflow.Output]), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
+	return workflow, nil
+}
+
+type configuredStageGraph struct {
+	current  workflows.Snapshot
+	load     func(string) (workflows.Snapshot, error)
+	executor *agentexec.Executor
+	store    messages.Store
+}
+
+func (graph configuredStageGraph) register(workflow *hatchet.Workflow, resolve *hatchet.Task, readState func(hatchet.Context) (ConfiguredState, error), taskName func(string) string, hooks ...ConfiguredHooks) (map[string]*hatchet.Task, error) {
+	order, err := graph.current.Order()
+	if err != nil {
+		return nil, err
+	}
+	name := graph.current.Workflow.Name
 	tasks := map[string]*hatchet.Task{}
 	for _, id := range order {
-		step := current.Workflow.Steps[id]
+		step := graph.current.Workflow.Steps[id]
 		parents := []*hatchet.Task{resolve}
 		seen := map[string]bool{}
 		for _, source := range step.Input.Sources {
@@ -168,12 +225,15 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 				seen[source] = true
 			}
 		}
-		tasks[id] = workflow.NewDurableTask(id, func(ctx hatchet.DurableContext, input ConfiguredInput) (ConfiguredResult, error) {
-			var state ConfiguredState
-			if err := ctx.StepOutput("resolve", &state); err != nil {
+		tasks[id] = workflow.NewDurableTask(taskName(id), func(ctx hatchet.DurableContext, _ any) (ConfiguredResult, error) {
+			state, err := readState(ctx)
+			if err != nil {
 				return ConfiguredResult{}, err
 			}
-			plan, err := load(state.Digest)
+			if state.Skip {
+				return ConfiguredResult{Digest: state.Digest}, nil
+			}
+			plan, err := graph.load(state.Digest)
 			if err != nil {
 				return ConfiguredResult{}, err
 			}
@@ -181,7 +241,7 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			if !exists {
 				return ConfiguredResult{}, errors.New("pinned step is unavailable")
 			}
-			service, err := configuredService(plan, executor, store)
+			service, err := configuredService(plan, graph.executor, graph.store)
 			if err != nil {
 				return ConfiguredResult{}, err
 			}
@@ -199,7 +259,7 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 					continue
 				}
 				var result ConfiguredResult
-				if err := ctx.StepOutput(source, &result); err != nil {
+				if err := ctx.StepOutput(taskName(source), &result); err != nil {
 					return ConfiguredResult{}, err
 				}
 				if result.Digest != state.Digest {
@@ -250,38 +310,7 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			return ConfiguredResult{Digest: state.Digest, Message: ref}, err
 		}, hatchet.WithParents(parents...), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))
 	}
-	workflow.NewTask("result", func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredResult, error) {
-		var state ConfiguredState
-		if err := ctx.StepOutput("resolve", &state); err != nil {
-			return ConfiguredResult{}, err
-		}
-		plan, err := load(state.Digest)
-		if err != nil {
-			return ConfiguredResult{}, err
-		}
-		if plan.Workflow.Output != current.Workflow.Output {
-			return ConfiguredResult{}, errors.New("pinned output step changed; compatible worker required")
-		}
-		var result ConfiguredResult
-		if err := ctx.StepOutput(plan.Workflow.Output, &result); err != nil {
-			return result, err
-		}
-		if result.Digest != state.Digest {
-			return ConfiguredResult{}, errors.New("result workflow identity mismatch")
-		}
-		service, err := configuredService(plan, executor, store)
-		if err != nil {
-			return result, err
-		}
-		result.Value, err = configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), name, state, plan, plan.Workflow.Output, result.Message)
-		if err == nil && plan.Workflow.Notebook {
-			var record notebooks.Record
-			record, err = notebookStore.Commit(ctx.GetContext(), name, ctx.WorkflowRunId(), plan.Digest, result.Value)
-			result.NotebookRevision = record.Revision
-		}
-		return result, err
-	}, hatchet.WithParents(resolve, tasks[current.Workflow.Output]), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
-	return workflow, nil
+	return tasks, nil
 }
 
 func configuredOutput(ctx context.Context, service *messages.Service, scope, name string, state ConfiguredState, plan workflows.Snapshot, id string, ref messages.Reference) (json.RawMessage, error) {

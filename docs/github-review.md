@@ -43,11 +43,12 @@ patches, and truncated patches become links in the review body. Large review
 bodies are split into persisted, individually reconciled parts. Candidate arrays
 copied into writer output do not become authoritative evidence.
 
-A stable ingress applies 30-day admission deduplication and serializes each PR.
-It dispatches to an immutable revision-specific adapter with required worker
-labels. The adapter resolves current PR identity, runs the configured graph as
-a durable child, reduces sources, and publishes. Original workflow names remain
-the CLI interface; scheduler action names include revision identity.
+A stable review workflow applies 30-day admission deduplication and serializes
+each PR. It contains resolution, the configured agent stages, reduction, and
+publication in one Hatchet DAG. Only running agent stages occupy durable worker
+slots; parent tasks do not hold slots while waiting for child workflows. Original
+workflow names remain the CLI interface. Every scheduler task action includes
+the integration and graph revision identity.
 
 ## Mount integration credentials
 
@@ -79,9 +80,10 @@ draft/closed PRs before scheduling, and submits with required worker labels.
 Configure the ingress and secret in the config repo.
 
 Alternatively, set `native_events: true` to subscribe through Hatchet's existing
-authenticated `github:pull_request:*` event ingress. The lightweight ingress
-dispatches to the adapter with `worker_labels`, so native events retain explicit
-placement. Native and signed-webhook routes share the same PR/head deduplication
+authenticated `github:pull_request:*` event ingress. Task action identities
+include the integration's `worker_labels`; only workers registered for that
+integration revision can execute its stages. Manual and signed-webhook
+submissions also require those labels. Both event routes share the same PR/head deduplication
 identity. When deploying to multiple clusters, enable native subscriptions on
 only the intended ingress or use an explicit event routing policy.
 
@@ -103,8 +105,12 @@ needed by the worker. Arbitrary per-request model or effort overrides are not
 accepted; choose trusted config-defined plans.
 
 Repository policy and canonical head are checked before every stage and every
-15 seconds during active work. Obsolete stages and their child runs are cancelled.
-Out-of-order webhooks cannot blindly cancel a current review. Publication rechecks
+15 seconds during active work. Obsolete stages stop before further agent work.
+A run with all stages queued is checked when its next stage starts; it does not
+occupy a worker slot solely to poll PR state. Cancelling the review workflow in
+Hatchet cancels its tasks through the native DAG lifecycle.
+Out-of-order requests whose pinned revision no longer matches fail resolution
+before agent work. They cannot cancel a current review. Publication rechecks
 policy and current head. Removed repositories, dry runs, and stale PRs do not
 publish. Completion recognizes the previous config worker's review and issue-comment
 markers and is keyed by PR head, independent of graph revision.
@@ -126,8 +132,9 @@ names prevent old tasks from landing on new incompatible workers. Retain old
 workers until their runs drain; referenced snapshots, messages, and compatible
 skill images must remain available. The v6 checked-in harness configuration migration itself
 requires draining older compiler-policy runs with their original worker.
-Test durable child cancellation/replay and TTL idempotency against your deployed
-Hatchet version before cutting over. Unit tests cover SDK callback execution and
+Drain or cancel runs from the old nested review and schedule registrations before
+replacing their workers. Test one-slot DAG completion, cancellation of an active
+stage, and TTL idempotency against your deployed Hatchet version before cutting over. Unit tests cover SDK callback execution and
 policy checks; they do not prove production server compatibility.
 
 Worker health endpoints on port 9091 are `/healthz` for process liveness,

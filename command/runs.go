@@ -97,7 +97,11 @@ func waitRunResult(ctx context.Context, runs runClient, id uuid.UUID, wait bool,
 			if task == nil {
 				var input hatchetbridge.ConfiguredInput
 				if json.Unmarshal(details.Input, &input) == nil && input.Digest != "" {
-					task = details.TaskRuns["dispatch-"+input.Digest]
+					task = details.TaskRuns[hatchetbridge.ConfiguredWorkflowName("result", input.Digest)]
+					if task == nil {
+						// Completed runs retain the task names used when they were submitted.
+						task = details.TaskRuns["dispatch-"+input.Digest]
+					}
 				}
 			}
 			if task == nil || task.Status != rest.V1TaskStatusCOMPLETED {

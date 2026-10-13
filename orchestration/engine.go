@@ -185,7 +185,7 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	if err != nil {
 		return out, err
 	}
-	if err := client.ReadyMCP(ctx, d.Directory, d.MCPServers); err != nil {
+	if err := run.Phase(ctx, telemetry.MCP, func(ctx context.Context) error { return client.ReadyMCP(ctx, d.Directory, d.MCPServers) }); err != nil {
 		return out, err
 	}
 	err = run.Phase(ctx, telemetry.Session, func(ctx context.Context) error {
