@@ -41,7 +41,8 @@ func RegisterReviewIngress(client *hatchet.Client, config githubreview.Integrati
 		if skip {
 			return githubreview.Outcome{Status: "skipped"}, nil
 		}
-		guarded, stopGuard, err := watchStage(ctx.GetContext(), 15*time.Second, func(checkCtx context.Context) error { return CheckReview(checkCtx, reload, handler, request.Review) })
+		original := ctx.GetContext()
+		guarded, stopGuard, err := watchStage(original, 15*time.Second, func(checkCtx context.Context) error { return CheckReview(checkCtx, reload, handler, request.Review) })
 		if errors.Is(err, ErrReviewObsolete) {
 			return githubreview.Outcome{Status: "stale"}, nil
 		}
@@ -50,6 +51,7 @@ func RegisterReviewIngress(client *hatchet.Client, config githubreview.Integrati
 		}
 		defer stopGuard()
 		ctx.SetContext(guarded)
+		defer ctx.SetContext(original)
 		result, err := runReviewChild(ctx, client, adapter, input, ReviewLabels(config))
 		if err != nil {
 			return githubreview.Outcome{}, err
