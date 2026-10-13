@@ -31,6 +31,9 @@ func TestConfiguredRoutingIsolatesEveryRevision(t *testing.T) {
 	if len(declaration.EventTriggers) != 1 || len(declaration.Tasks) != len(fixture.plan.Workflow.Steps)+3 {
 		t.Fatal("native review graph not registered")
 	}
+	if len(declaration.DefaultFilters) != 1 || string(declaration.DefaultFilters[0].Payload) != "{}" || declaration.DefaultFilters[0].Scope != config.Name {
+		t.Fatalf("native filter requires an empty JSON payload and integration scope: %+v", declaration.DefaultFilters)
+	}
 	originalActions := map[string]bool{}
 	for _, task := range declaration.Tasks {
 		originalActions[task.Action] = true
