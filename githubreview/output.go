@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 )
 
 func uniqueJSON(data []byte) error {
@@ -87,33 +86,6 @@ func checkOutputKeys(data []byte) error {
 	return nil
 }
 
-func pinnedFiles(resolved Resolved) ([]File, error) {
-	const prefix = "\nDiff JSON:\n"
-	index := strings.LastIndex(resolved.Prompt, prefix)
-	if index < 0 || len(resolved.Prompt) > MaxDiffBytes*6+4096 {
-		return nil, errors.New("resolved prompt is missing bounded pinned diff")
-	}
-	raw := resolved.Prompt[index+len(prefix):]
-	var files []File
-	if err := json.Unmarshal([]byte(raw), &files); err != nil {
-		return nil, errors.New("invalid resolved diff")
-	}
-	if _, err := changedLines(files); err != nil {
-		return nil, err
-	}
-	return files, nil
-}
-func sameFiles(first, second []File) bool {
-	if len(first) != len(second) {
-		return false
-	}
-	for index, file := range first {
-		if file != second[index] {
-			return false
-		}
-	}
-	return true
-}
 func ValidateResolvedOutput(resolved Resolved, output json.RawMessage) error {
 	if err := validateInput(resolved.Input); err != nil {
 		return err
@@ -121,14 +93,6 @@ func ValidateResolvedOutput(resolved Resolved, output json.RawMessage) error {
 	if resolved.Digest == "" || len(resolved.Digest) > 256 || resolved.Key != reviewKey(resolved.Input, resolved.Digest) {
 		return errors.New("invalid resolved review key")
 	}
-	files, err := pinnedFiles(resolved)
-	if err != nil {
-		return err
-	}
-	lines, err := changedLines(files)
-	if err != nil {
-		return err
-	}
-	_, _, err = validateOutput(output, lines)
+	_, _, err := validateOutput(output)
 	return err
 }

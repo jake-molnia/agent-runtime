@@ -10,6 +10,7 @@ import (
 	"regexp"
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
+	"github.com/jake-molnia/agent-runtime/hatchetbridge"
 )
 
 var workflowName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
@@ -35,7 +36,11 @@ func submitCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer client.Close(context.Background())
-	run, err := client.RunNoWait(ctx, args[0], data)
+	var input hatchetbridge.ConfiguredInput
+	if err := json.Unmarshal(data, &input); err != nil || len(input.Digest) != 64 {
+		return errors.New("configured workflow input requires snapshot digest")
+	}
+	run, err := client.RunNoWait(ctx, hatchetbridge.ConfiguredWorkflowName(args[0], input.Digest), data)
 	if err != nil {
 		return err
 	}

@@ -30,7 +30,7 @@ func recurringFixture(t *testing.T) (configuredTestFixture, notebooks.Directory)
 		t.Fatal(err)
 	}
 	backend, store := newConfiguredTestBackend(t), messages.Directory{Root: t.TempDir()}
-	workflow, err := RegisterConfiguredWorkflow(offlineLifecycleClient(t), backend, store, root, plan, notes)
+	workflow, err := RegisterConfiguredWorkflow(offlineLifecycleClient(t), backend, store, root, plan, ConfiguredOptions{NotebookStore: notes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,11 @@ func recurringFixture(t *testing.T) (configuredTestFixture, notebooks.Directory)
 
 func TestRecurringDeclarationPinsCronInputAndSerializesRuns(t *testing.T) {
 	fixture, _ := recurringFixture(t)
-	declaration, _, _, _ := fixture.workflow.Dump()
+	schedule, err := RegisterConfiguredSchedule(offlineLifecycleClient(t), fixture.workflow, fixture.plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration, _, _, _ := schedule.Dump()
 	if !reflect.DeepEqual(declaration.CronTriggers, []string{"CRON_TZ=Europe/London 0 8 * * *"}) || declaration.CronInput == nil {
 		t.Fatalf("cron missing: %+v", declaration)
 	}
@@ -54,8 +58,12 @@ func TestRecurringDeclarationPinsCronInputAndSerializesRuns(t *testing.T) {
 		t.Fatal("scheduled run not pinned")
 	}
 	configuredTestJSON(t, input.Input, fixture.plan.Workflow.DefaultInput)
-	if len(declaration.ConcurrencyArr) != 1 || declaration.ConcurrencyArr[0].GetMaxRuns() != 1 || declaration.ConcurrencyArr[0].GetLimitStrategy().String() != "CANCEL_NEWEST" {
-		t.Fatalf("notebook concurrency missing: %+v", declaration.ConcurrencyArr)
+	execution, _, _, _ := fixture.workflow.Dump()
+	if len(execution.CronTriggers) != 0 {
+		t.Fatal("revisioned execution owns a duplicate cron")
+	}
+	if len(execution.ConcurrencyArr) != 1 || !execution.ConcurrencyArr[0].GetIsTenantScoped() || execution.ConcurrencyArr[0].GetMaxRuns() != 1 || execution.ConcurrencyArr[0].GetLimitStrategy().String() != "CANCEL_NEWEST" {
+		t.Fatalf("notebook concurrency missing: %+v", execution.ConcurrencyArr)
 	}
 }
 

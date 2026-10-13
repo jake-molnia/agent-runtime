@@ -1,0 +1,1 @@
+Input is [original PR context, candidate review]. Independently investigate the prepared checkout for missed failure cases using native tools and Aperture. Report actionable findings with source locations. Return JSON matching the supplied output schema.

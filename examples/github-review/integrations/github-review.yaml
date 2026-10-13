@@ -1,0 +1,13 @@
+version: 1
+name: example-pr-review
+workflow: review-agents
+candidate_steps: [verify, adversarial]
+writeup_step: writeup
+actions: [opened, synchronize, reopened, ready_for_review]
+native_events: false
+worker_labels: {cluster: staging}
+repositories:
+  1:
+    name: example/repository
+    installation_id: 2
+    publish: false

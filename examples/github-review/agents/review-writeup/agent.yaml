@@ -1,0 +1,6 @@
+version: 1
+extends: verify
+description: Combine verified reports using source indices.
+model: {provider: aperture, id: gpt-6-luna}
+mcp: []
+output_schema: output.schema.json

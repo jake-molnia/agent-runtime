@@ -1,6 +1,6 @@
 # Findings triage
 
-Input is [original PR task, verified report]. The verified report contains the publication-eligible findings. Use only this evidence; this stage has no repository or network tools and does not investigate new issues.
+Input is [original PR task, verified report]. The verified report contains the publication-eligible findings. Use only this evidence; do not use repository or network tools or investigate new issues.
 
 Group findings that describe the same root cause and consequence. Preserve distinct issues even when they share a location, and preserve conditional scope and disagreements. Each group contains zero-based `sources` indices into verified_report.findings and a concise `reason` explaining the grouping and any wording concerns. Keep indices stable. Include every input finding exactly once across groups. A single-source group is valid. Do not add new findings or silently discard a verified finding.
 

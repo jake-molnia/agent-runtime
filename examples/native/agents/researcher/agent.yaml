@@ -1,2 +1,2 @@
-# Native grants are explicit in both the profile and the agent.
-tools: [webfetch]
+# Native tools follow the runtime-owned sandbox harness configuration.
+version: 1

@@ -32,6 +32,7 @@ import (
 
 type Definition struct {
 	MCPServers         []string
+	SkillBundleDigest  string
 	AllowProjectConfig bool
 	Pool               string
 	Namespace          string
@@ -166,7 +167,7 @@ func (e *Engine) Provision(ctx context.Context, d Definition, req Request) (out 
 	if err != nil {
 		return out, err
 	}
-	input := runtimeapi.Init{AllowProjectConfig: d.AllowProjectConfig, RunID: req.Key, Password: e.Password(req.Key), TailnetKey: identity.Key, Hostname: identity.Hostname, Config: config}
+	input := runtimeapi.Init{AllowProjectConfig: d.AllowProjectConfig, SkillBundleDigest: d.SkillBundleDigest, RunID: req.Key, Password: e.Password(req.Key), TailnetKey: identity.Key, Hostname: identity.Hostname, Config: config}
 	g, parallel = errgroup.WithContext(ctx)
 	g.Go(func() error {
 		return run.Phase(parallel, telemetry.Initialize, func(ctx context.Context) error { return e.initialize(ctx, out.Lease.Host, input, run) })

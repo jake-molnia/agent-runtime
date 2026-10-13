@@ -102,7 +102,9 @@ func NewWebhookHandler(config WebhookConfig) (http.Handler, error) {
 				FullName string `json:"full_name"`
 			} `json:"repository"`
 			PullRequest struct {
-				Number int `json:"number"`
+				Number int    `json:"number"`
+				Draft  bool   `json:"draft"`
+				State  string `json:"state"`
 				Base   struct {
 					SHA  string `json:"sha"`
 					Repo struct {
@@ -125,6 +127,14 @@ func NewWebhookHandler(config WebhookConfig) (http.Handler, error) {
 		}
 		if !actions[payload.Action] {
 			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if payload.PullRequest.Draft || payload.PullRequest.State == "closed" {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if payload.PullRequest.State != "open" {
+			http.Error(writer, "invalid pull request state", http.StatusBadRequest)
 			return
 		}
 		input := Input{InstallationID: payload.Installation.ID, RepositoryID: payload.Repository.ID, Repository: payload.Repository.FullName, Number: payload.Number, BaseSHA: payload.PullRequest.Base.SHA, HeadSHA: payload.PullRequest.Head.SHA, DeliveryID: delivery}

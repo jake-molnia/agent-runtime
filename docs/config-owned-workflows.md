@@ -18,7 +18,7 @@ Custom workflows and instruction overrides remain supported for deployments that
 need them. They are optional. Model and tool overrides can be supplied without
 replacing the bundled instructions. Full resolved definitions are snapshotted.
 
-GitHub event admission, pinned repository access, and publication are trusted
-integration responsibilities. Selecting the analysis pack does not create that
+The [GitHub integration](github-review.md) owns event admission, pinned repository
+access, and publication. Selecting the analysis pack alone does not enable that
 integration or authorize posting comments. The Go `RegisterMessageDAG` API remains
 available for advanced integrations.

@@ -94,6 +94,12 @@ func waitRunResult(ctx context.Context, runs runClient, id uuid.UUID, wait bool,
 			return nil, errors.New("workflow run was canceled")
 		case rest.V1TaskStatusCOMPLETED:
 			task := details.TaskRuns["result"]
+			if task == nil {
+				var input hatchetbridge.ConfiguredInput
+				if json.Unmarshal(details.Input, &input) == nil && input.Digest != "" {
+					task = details.TaskRuns["dispatch-"+input.Digest]
+				}
+			}
 			if task == nil || task.Status != rest.V1TaskStatusCOMPLETED {
 				return nil, errors.New("completed workflow has no completed result task")
 			}

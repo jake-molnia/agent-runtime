@@ -144,6 +144,8 @@ func TestFilesAndReviewsPagination(t *testing.T) {
 				fmt.Fprintf(writer, `{"id":%d,"body":"marker","commit_id":%q,"user":{"login":%q,"type":%q}}`, index+1, input.HeadSHA, login, kind)
 			}
 			fmt.Fprint(writer, "]")
+		case "/repos/owner/repo/issues/9/comments":
+			fmt.Fprint(writer, `[]`)
 		default:
 			writer.WriteHeader(404)
 		}
@@ -194,5 +196,122 @@ func TestClientNeverFollowsRedirect(t *testing.T) {
 	})
 	if _, err := client.Files(context.Background(), input); err == nil || requests != 0 {
 		t.Fatal("followed API redirect")
+	}
+}
+
+func TestLegacyCommentsRequireSameAppAndHead(t *testing.T) {
+	input, _ := fixture()
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app":
+			fmt.Fprint(w, `{"id":19,"slug":"reviewer"}`)
+		case "/app/installations/7/access_tokens":
+			fmt.Fprint(w, `{"token":"secret"}`)
+		case "/repos/owner/repo/pulls/9/reviews":
+			fmt.Fprint(w, `[]`)
+		case "/repos/owner/repo/issues/9/comments":
+			body := legacyMarker + "\n<!-- head:" + input.HeadSHA + " -->\n\nold review"
+			json.NewEncoder(w).Encode([]any{
+				map[string]any{"id": 1, "body": body, "performed_via_github_app": map[string]int{"id": 20}},
+				map[string]any{"id": 2, "body": body, "performed_via_github_app": map[string]int{"id": 19}},
+				map[string]any{"id": 3, "body": body},
+				map[string]any{"id": 4, "body": legacyMarker + "\n\nquoted <!-- head:" + input.HeadSHA + " -->", "performed_via_github_app": map[string]int{"id": 19}},
+			})
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	reviews, err := client.Reviews(context.Background(), input)
+	if err != nil || len(reviews) != 1 || reviews[0].ID != 2 || reviews[0].CommitID != input.HeadSHA {
+		t.Fatalf("%+v %v", reviews, err)
+	}
+}
+func TestFilesStopsAtGitHubThreeThousandCap(t *testing.T) {
+	input, _ := fixture()
+	pages := 0
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+			fmt.Fprint(w, `{"token":"secret"}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/files") {
+			pages++
+			files := make([]File, 100)
+			for i := range files {
+				files[i] = File{Path: fmt.Sprintf("%d/%d.go", pages, i)}
+			}
+			json.NewEncoder(w).Encode(files)
+			return
+		}
+		w.WriteHeader(404)
+	})
+	files, err := client.Files(context.Background(), input)
+	if err != nil || pages != 30 || len(files) != 3000 {
+		t.Fatalf("%d %d %v", len(files), pages, err)
+	}
+}
+func TestCheckoutTokenOnlyGrantsContentsRead(t *testing.T) {
+	input, _ := fixture()
+	scopes := []map[string]string{}
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/installation":
+			fmt.Fprint(w, `{"id":7}`)
+		case "/repos/owner/repo":
+			fmt.Fprint(w, `{"id":11,"full_name":"owner/repo"}`)
+		case "/repos/owner/repo/pulls/9":
+			fmt.Fprintf(w, `{"number":9,"state":"open","base":{"sha":%q,"repo":{"id":11,"full_name":"owner/repo"}},"head":{"sha":%q}}`, input.BaseSHA, input.HeadSHA)
+		case "/app/installations/7/access_tokens":
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 11 {
+				t.Error("not scoped to repository")
+			}
+			scopes = append(scopes, body.Permissions)
+			fmt.Fprint(w, `{"token":"contents-token"}`)
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	token, err := client.CheckoutToken(context.Background(), input)
+	if err != nil || token != "contents-token" || len(scopes) != 2 || len(scopes[1]) != 1 || scopes[1]["contents"] != "read" {
+		t.Fatalf("%v %v", scopes, err)
+	}
+}
+
+func TestFullReviewPageCanExceedFourMiB(t *testing.T) {
+	input, _ := fixture()
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app":
+			fmt.Fprint(w, `{"id":19,"slug":"reviewer"}`)
+		case "/app/installations/7/access_tokens":
+			fmt.Fprint(w, `{"token":"secret"}`)
+		case "/repos/owner/repo/issues/9/comments":
+			fmt.Fprint(w, `[]`)
+		case "/repos/owner/repo/pulls/9/reviews":
+			if r.URL.Query().Get("page") != "1" {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			body := strings.Repeat("x", 60000)
+			fmt.Fprint(w, "[")
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					fmt.Fprint(w, ",")
+				}
+				fmt.Fprintf(w, `{"id":%d,"body":%q,"commit_id":%q,"user":{"login":"reviewer[bot]","type":"Bot"}}`, i+1, body, input.HeadSHA)
+			}
+			fmt.Fprint(w, "]")
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	reviews, err := client.Reviews(context.Background(), input)
+	if err != nil || len(reviews) != 100 {
+		t.Fatalf("reviews %d: %v", len(reviews), err)
 	}
 }

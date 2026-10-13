@@ -60,32 +60,20 @@ output: work
 
 ## Configure the model and general tools
 
-A builtin does not grant itself tools. Deployments can explicitly enable native tools, approved remote MCP services, or both. The runtime does not ship a search/browser service or a repository hosting integration.
+Native tools follow the runtime-owned, unrestricted OpenCode configuration in
+`harnesses/opencode.json`. Agents may read, edit, run shell commands, and use native
+tools inside their disposable sandbox without permission prompts. Root inside the
+sandbox is intentional; it does not imply a privileged container or host access.
 
-The supported native permissions are `read`, `glob`, `grep`, `edit`, `shell`, and `webfetch`. Declare the allowed set in the execution profile and select the needed tools in the agent package. For example:
-
-```yaml
-# deployment.yaml, inside an otherwise configured execution profile:
-profiles:
-  web:
-    tools: [webfetch]
-    # Include pool, namespace, directory, and provider configuration as usual.
-```
-
-```yaml
-# agents/researcher/agent.yaml
-tools: [webfetch]
-```
-
-A profile grant alone does not enable a tool. An agent cannot select a native tool its profile does not grant. New snapshots pin the selected native permissions; changing the current configuration does not add tools to an already pinned run.
-
-`webfetch` reads URLs. It is suitable for following documentation links and reading known pages, but it does not provide browser interaction or a search engine. Native `websearch` is deliberately unsupported because the provider setup requires separate consent and configuration. Use an existing general search/browser MCP service for open-ended discovery. No domain-specific merchant or news APIs are needed.
-
-`edit` covers edits, writes, and patches. `shell` permits broad process, filesystem, and network access within the sandbox; it has no per-command allowlist. A profile that grants shell cannot rely on omitted `read`, `edit`, or `webfetch` permissions to restrict equivalent shell operations. Configure sandbox isolation and external access accordingly.
+Models, provider credentials, sandbox/network access, and approved remote MCP
+connections remain deployment settings. A selected MCP service exposes its full
+catalog; the service authorizes operations for the sandbox identity. Native tool
+allowlists are not configured per agent or profile. General search/browser MCP
+services can provide open-ended discovery without domain-specific APIs.
 
 The [native examples](../examples/native/deployment.yaml) show a URL-reading researcher and an upstreamer with repository-capable native tools. They require the usual runtime deployment and provider credentials. The document-research workflow supplies a concrete brief; the upstream workflow requires your real repository task via `--input`. No schedule or git hosting credentials are configured.
 
-For general web discovery, a deployment can use the following remote MCP structure. Replace the example model, infrastructure values, secret path, URL, and tool names with values supported by your deployment:
+For general web discovery, a deployment can use the following remote MCP structure. Replace the example model, infrastructure values, secret path, and URL with values supported by your deployment:
 
 ```yaml
 version: 1
@@ -103,7 +91,6 @@ profiles:
 mcp_servers:
   web:
     url: https://web-tools.example.invalid/mcp
-    tools: [search, browse]
 ```
 
 Select that service in `agents/price-watcher/agent.yaml`:
@@ -112,7 +99,7 @@ Select that service in `agents/price-watcher/agent.yaml`:
 mcp: [web]
 ```
 
-For MCP access, the deployment declares the endpoint and exact tools, the execution profile grants the service, and the agent selects it. All three are required. See the [definition configuration reference](../definitions/README.md) for MCP endpoint rules and custom agent overrides.
+For MCP access, the deployment declares the endpoint, the execution profile grants the service, and the agent selects it. All three are required. See the [definition configuration reference](../definitions/README.md) for MCP endpoint rules and custom agent overrides.
 
 The `defaults` block registers every builtin with a model and execution profile. Use an agent package to override a builtin or inherit one under another name:
 
@@ -228,7 +215,7 @@ The app pentester needs explicit authorized targets, test identities, request li
 Run `scripts/verify-presets.sh` to test the catalog, recurring execution, notebook
 replay, CLI result handling, and every generated starter. Set
 `AGENT_RUNTIME_TEST_OPENCODE_BINARY` to OpenCode 2.0.26 to also exercise actual
-native tool permissions and MCP handshakes against local fake providers. These
+native execution and MCP handshakes against local fake providers. These
 checks do not measure live-model task quality or deploy a Hatchet server.
 
 ## Runtime-owned PR review
@@ -240,14 +227,16 @@ selector. It does not copy role prompts, schemas, or the graph into config.
 The runtime owns `pr-reviewer`, `pr-adversarial`, `pr-security`, `pr-dependencies`,
 `pr-verifier`, `pr-triager`, and `pr-writer`. Four independent investigations feed
 the verifier, whose findings feed triage and writeup. The writer returns an
-assessment and source-indexed findings. This is the analysis workflow; GitHub
-admission and publication still belong to a trusted integration. Source-index
-coverage must be validated by that integration before posting.
+assessment and source-indexed findings. The [GitHub integration](github-review.md)
+handles admission, checkout, and publication.
+Select `candidate_steps: [verify]` and `writeup_step: writeup` when attaching this
+pack. The verifier result is bounded to the reducer's 15-candidate limit, and
+the adapter validates source-index coverage before posting.
 
 The roles inherit deployment model/profile defaults and grant no tools themselves.
 At adoption, optional `agents/<role>/agent.yaml` files select different models,
-timeouts, and approved native/MCP tools. The investigative roles need repository
-access; triage and writer can operate without tools. Configuration need not carry
+timeouts, bundled skills, and selected MCP services. The investigative roles need repository
+access; triage and writer are instructed to use only supplied evidence. Configuration need not carry
 any role instruction or schema files.
 
 All role prompts live at `definitions/builtins/<name>/instructions.md`. Shared

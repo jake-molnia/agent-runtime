@@ -24,4 +24,3 @@ mcp_servers:
     tools: [search, browse]
   repository:
     url: https://repository-tools.example.invalid/mcp
-    tools: [read_repository, isolated_checkout, git, run_checks]

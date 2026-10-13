@@ -40,6 +40,7 @@ type fakeAPI struct {
 	requests       []ReviewRequest
 	postError      error
 	retainReview   bool
+	failPostAt     int
 	canonicalCalls int
 	changeAt       int
 }
@@ -55,10 +56,14 @@ func (api *fakeAPI) Files(context.Context, Input) ([]File, error)     { return a
 func (api *fakeAPI) Reviews(context.Context, Input) ([]Review, error) { return api.reviews, nil }
 func (api *fakeAPI) CreateReview(ctx context.Context, input Input, request ReviewRequest) (int64, error) {
 	api.requests = append(api.requests, request)
-	if api.postError == nil || api.retainReview {
+	postError := api.postError
+	if api.failPostAt > 0 && len(api.requests) != api.failPostAt {
+		postError = nil
+	}
+	if postError == nil || api.retainReview {
 		api.reviews = append(api.reviews, Review{ID: 42, Body: request.Body, CommitID: request.CommitID})
 	}
-	return 42, api.postError
+	return 42, postError
 }
 func fixture() (Input, *fakeAPI) {
 	input := Input{InstallationID: 7, RepositoryID: 11, Repository: "owner/repo", Number: 9, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), DeliveryID: "delivery"}
@@ -80,8 +85,8 @@ func TestResolveAndPublish(t *testing.T) {
 	input, api := fixture()
 	handler, _ := NewHandler(api, newMemoryStore())
 	resolved := mustResolved(t, handler, input)
-	if resolved.Skip || !strings.Contains(resolved.Prompt, "+added") {
-		t.Fatalf("missing diff: %+v", resolved)
+	if resolved.Skip || !strings.Contains(resolved.Prompt, input.HeadSHA) || strings.Contains(resolved.Prompt, "Diff JSON") {
+		t.Fatalf("missing factual context: %+v", resolved)
 	}
 	encoded, err := json.Marshal(resolved)
 	if err != nil {
@@ -137,8 +142,7 @@ func TestResolveIdentityAndState(t *testing.T) {
 		{"uppercase SHA", func(input *Input, api *fakeAPI) { input.HeadSHA = strings.Repeat("B", 40) }, false},
 		{"wrong repo", func(input *Input, api *fakeAPI) { api.current.RepositoryID++ }, false},
 		{"wrong installation", func(input *Input, api *fakeAPI) { api.current.InstallationID++ }, false},
-		{"changed base", func(input *Input, api *fakeAPI) { api.current.BaseSHA = strings.Repeat("c", 40) }, false},
-		{"changes during fetch", func(input *Input, api *fakeAPI) { api.changeAt = 2 }, false},
+		{"changed head", func(input *Input, api *fakeAPI) { api.changeAt = 1 }, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input, api := fixture()
@@ -156,12 +160,13 @@ func TestResolveIdentityAndState(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsOversizedEncodedContext(t *testing.T) {
+func TestResolveDoesNotEmbedLargeDiff(t *testing.T) {
 	input, api := fixture()
-	api.files = []File{{Path: "source.go", Patch: "@@ -0,0 +1 @@\n+" + strings.Repeat("\t", MaxDiffBytes/2) + "\n"}}
+	api.files = []File{{Path: "source.go", Patch: strings.Repeat("x", 2<<20)}}
 	handler, _ := NewHandler(api, newMemoryStore())
-	if _, err := handler.Resolve(context.Background(), input, "digest", "run"); err == nil || !strings.Contains(err.Error(), "encoded review context") {
-		t.Fatalf("accepted oversized encoded context: %v", err)
+	resolved := mustResolved(t, handler, input)
+	if len(resolved.Prompt) > 1024 {
+		t.Fatal("diff leaked into child input")
 	}
 }
 func TestPublishSkipsChangedState(t *testing.T) {
@@ -246,8 +251,6 @@ func TestStrictReviewOutput(t *testing.T) {
 		`{"summary":"ok","summary":"duplicate","findings":[]}`,
 		`{"summary":"ok","findings":null}`,
 		`{"summary":"ok"}`,
-		`{"summary":"ok","findings":[{"path":"src/main.go","line":1,"body":"context is not changed"}]}`,
-		`{"summary":"ok","findings":[{"path":"src/main.go","line":4,"body":"outside hunk"}]}`,
 		`{"summary":"ok","findings":[{"path":"../escape","line":2,"body":"unsafe"}]}`,
 		`{"summary":"ok","findings":[{"path":"src/main.go","line":2,"body":"ok","side":"LEFT"}]}`,
 		`{"summary":"ok","findings":[{"path":"src/main.go","line":2,"body":"ok","line":3}]}`,
@@ -284,7 +287,7 @@ func TestPatchAndPathBounds(t *testing.T) {
 	}
 }
 
-func TestPublishPinsBaseAndDiff(t *testing.T) {
+func TestPublishAllowsBaseMovementAndRefreshedPlacement(t *testing.T) {
 	for _, change := range []string{"base", "diff"} {
 		t.Run(change, func(t *testing.T) {
 			input, api := fixture()
@@ -299,25 +302,19 @@ func TestPublishPinsBaseAndDiff(t *testing.T) {
 				api.files = []File{{Path: "src/main.go", Patch: "@@ -1,2 +1,3 @@\n context\n-old\n+different\n+added"}}
 			}
 			outcome, err := handler.Publish(context.Background(), resolved, validOutput)
-			if err != nil || outcome.Status != "stale" || len(api.requests) != 0 {
-				t.Fatalf("posted against changed %s: %+v %v", change, outcome, err)
+			if err != nil || outcome.Status != "published" || len(api.requests) != 1 {
+				t.Fatalf("failed after changed %s: %+v %v", change, outcome, err)
 			}
 		})
 	}
 }
-func TestValidateResolvedOutputUsesCapturedDiff(t *testing.T) {
+func TestValidateResolvedOutputAcceptsSafeOffDiffLocations(t *testing.T) {
 	input, api := fixture()
 	handler, _ := NewHandler(api, newMemoryStore())
 	resolved := mustResolved(t, handler, input)
-	if err := ValidateResolvedOutput(resolved, validOutput); err != nil {
+	resolved.Prompt = "Factual context only"
+	if err := ValidateResolvedOutput(resolved, json.RawMessage(`{"summary":"ok","findings":[{"path":"unchanged.go","line":42,"body":"supporting code"}]}`)); err != nil {
 		t.Fatal(err)
-	}
-	if err := ValidateResolvedOutput(resolved, json.RawMessage(`{"summary":"ok","findings":[{"path":"src/main.go","line":1,"body":"context"}]}`)); err == nil {
-		t.Fatal("accepted unchanged captured line")
-	}
-	resolved.Prompt = "untrusted replacement"
-	if err := ValidateResolvedOutput(resolved, validOutput); err == nil {
-		t.Fatal("accepted missing captured diff")
 	}
 }
 

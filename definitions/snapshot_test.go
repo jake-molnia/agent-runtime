@@ -153,3 +153,30 @@ func TestMissingCredentialFilesLoadButFailAtExecution(t *testing.T) {
 		t.Fatalf("cancellation: %v", err)
 	}
 }
+
+func TestCompiledSystemIncludesPinnedOutputSchema(t *testing.T) {
+	snapshot, err := loaded(t, fixture(t)).Snapshot("reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := snapshot.Definition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := definition.Config(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Agents map[string]struct {
+			System string `json:"system"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	system := config.Agents["authored"].System
+	if !strings.Contains(system, string(snapshot.Agent.Schema)) || !strings.Contains(system, "# Output format") {
+		t.Fatalf("pinned schema absent from trusted system: %s", system)
+	}
+}

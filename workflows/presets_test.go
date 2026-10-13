@@ -60,7 +60,7 @@ func TestReviewPackNeedsOnlySelectionAndDeployment(t *testing.T) {
 		t.Fatal("review evidence or verification gate lost")
 	}
 	for _, snapshot := range plan.Agents {
-		if snapshot.Agent.Model.ID != "default-model" || len(snapshot.Agent.Tools) != 0 || len(snapshot.Agent.MCP) != 0 {
+		if snapshot.Agent.Model.ID != "default-model" || len(snapshot.Agent.MCP) != 0 {
 			t.Fatal("pack imposed deployment settings or granted tools")
 		}
 	}

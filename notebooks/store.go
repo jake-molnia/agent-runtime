@@ -19,8 +19,8 @@ import (
 
 const MaxNotebookBytes = 64 << 10
 
-const maxRecordBytes = 3 << 20
-const maxPayloadBytes = 1 << 20
+const maxRecordBytes = 12 << 20
+const maxPayloadBytes = 4 << 20
 
 var (
 	ErrConflict  = errors.New("notebook revision conflict")
@@ -177,16 +177,26 @@ func decode(data []byte, result any) error {
 	return nil
 }
 
+func marshalRecord(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
+}
+
 func writeRecord(ctx context.Context, directory, name string, value any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	payload, err := json.Marshal(value)
+	payload, err := marshalRecord(value)
 	if err != nil {
 		return err
 	}
 	checksum := sha256.Sum256(payload)
-	data, err := json.Marshal(struct {
+	data, err := marshalRecord(struct {
 		Checksum string          `json:"checksum"`
 		Data     json.RawMessage `json:"data"`
 	}{hex.EncodeToString(checksum[:]), payload})

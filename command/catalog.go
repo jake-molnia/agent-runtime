@@ -119,7 +119,7 @@ func runCommand(ctx context.Context, args []string) error {
 			return errors.New("input file unavailable")
 		}
 		defer file.Close()
-		data, err = io.ReadAll(io.LimitReader(file, 1<<20+1))
+		data, err = io.ReadAll(io.LimitReader(file, workflows.MaxInputBytes+1))
 		if err != nil {
 			return errors.New("input file unavailable")
 		}
@@ -141,7 +141,7 @@ func runCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	defer client.Close(context.Background())
-	ref, err := client.RunNoWait(ctx, args[0], input)
+	ref, err := client.RunNoWait(ctx, hatchetbridge.ConfiguredWorkflowName(args[0], input.Digest), input)
 	if err != nil {
 		return err
 	}

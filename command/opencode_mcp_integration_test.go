@@ -31,8 +31,36 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, attempted := range []string{"publish_comment", "dangerous_tool"} {
-		t.Run(attempted, func(t *testing.T) {
+	for _, scenario := range []struct {
+		name, attempted string
+		brokerCatalog   bool
+		builtinSkills   bool
+	}{
+		{"exact_allowed", "broker_publish_comment", false, false},
+		{"legacy_list_does_not_restrict", "broker_dangerous_tool", false, false},
+		{"catalog_new", "broker_new_tool", true, false},
+		{"catalog_revoked", "broker_revoked_tool", true, false},
+		{"catalog_other_server", "unused_dangerous_tool", true, false},
+		{"catalog_shell", "shell", true, false},
+		{"repeated_shell", "shell", true, false},
+		{"catalog_read", "read", true, false},
+		{"catalog_write", "write", true, false},
+		{"builtin_skill", "skill", true, true},
+		{"builtin_unselected_skill", "skill", true, true},
+		{"builtin_reference", "read", true, true},
+		{"builtin_workspace_read", "read", true, true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			attempted := scenario.attempted
+			skillDirectory := os.Getenv("AGENT_RUNTIME_TEST_SKILLS_DIRECTORY")
+			if scenario.builtinSkills && skillDirectory == "" {
+				t.Skip("set AGENT_RUNTIME_TEST_SKILLS_DIRECTORY to installed pinned skill catalog")
+			}
+			if scenario.builtinSkills {
+				t.Setenv("AGENT_RUNTIME_SKILL_BUNDLE_ROOT", filepath.Join(filepath.Dir(skillDirectory), "bundles"))
+				t.Setenv("AGENT_RUNTIME_SKILL_CATALOG_ROOT", skillDirectory)
+			}
+			var workspace string
 			listener, err := net.Listen("tcp", "127.0.0.1:4096")
 			if err != nil {
 				t.Fatal(err)
@@ -41,6 +69,7 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			var mutex sync.Mutex
 			methods, calls := map[string]int{}, map[string]int{}
 			var advertised [][]string
+			var observedProviderBodies []string
 			unusedRequests := 0
 			broker := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.Method != "POST" {
@@ -75,12 +104,15 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 					result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "fake-broker", "version": "1"}}
 				case "tools/list":
 					tools := []any{}
-					for _, name := range []string{"publish_comment", "dangerous_tool"} {
+					for _, name := range []string{"publish_comment", "dangerous_tool", "new_tool", "revoked_tool"} {
 						tools = append(tools, map[string]any{"name": name, "description": name, "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}})
 					}
 					result = map[string]any{"tools": tools}
 				case "tools/call":
 					result = map[string]any{"content": []any{map[string]string{"type": "text", "text": "broker called"}}}
+					if rpc.Params.Name == "revoked_tool" {
+						result = map[string]any{"isError": true, "content": []any{map[string]string{"type": "text", "text": "broker policy revoked"}}}
+					}
 				default:
 					t.Errorf("unexpected MCP method %s", rpc.Method)
 					result = map[string]any{}
@@ -123,13 +155,41 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 				}
 				mutex.Lock()
 				advertised = append(advertised, names)
-				first := len(advertised) == 1
+				observedProviderBodies = append(observedProviderBodies, string(body))
+				round := len(advertised)
+				first := round == 1 || (scenario.name == "repeated_shell" && round <= 5)
 				mutex.Unlock()
 				writer.Header().Set("Content-Type", "text/event-stream")
 				delta := map[string]any{"role": "assistant"}
 				finish := "stop"
 				if first {
-					delta["tool_calls"] = []any{map[string]any{"index": 0, "id": "call_mcp", "type": "function", "function": map[string]string{"name": "broker_" + attempted, "arguments": "{}"}}}
+					arguments := "{}"
+					if attempted == "skill" {
+						id := "codebase-design"
+						if scenario.name == "builtin_unselected_skill" {
+							id = "architect"
+						}
+						encoded, _ := json.Marshal(map[string]string{"id": id})
+						arguments = string(encoded)
+					}
+					if attempted == "shell" || attempted == "read" || attempted == "write" {
+						encoded, _ := json.Marshal(map[string]string{"command": "touch native-write", "workdir": workspace, "path": filepath.Join(workspace, "native-write"), "content": "native write succeeded"})
+						arguments = string(encoded)
+						if attempted == "read" {
+							encoded, _ = json.Marshal(map[string]string{"path": filepath.Join(workspace, "native-read")})
+							arguments = string(encoded)
+						}
+					}
+					if scenario.name == "repeated_shell" {
+						encoded, _ := json.Marshal(map[string]string{"command": "printf x >> native-write", "workdir": workspace})
+						arguments = string(encoded)
+					}
+					if scenario.name == "builtin_reference" {
+						path := filepath.Join(filepath.Dir(skillDirectory), "bundles", "pstack", "pstack", "skills", "architect", "references", "runner-prompt.md")
+						encoded, _ := json.Marshal(map[string]string{"path": path})
+						arguments = string(encoded)
+					}
+					delta["tool_calls"] = []any{map[string]any{"index": 0, "id": fmt.Sprintf("call_mcp_%d", round), "type": "function", "function": map[string]string{"name": attempted, "arguments": arguments}}}
 					finish = "tool_calls"
 				} else {
 					delta["content"] = answer
@@ -143,8 +203,11 @@ func TestOpenCodeNativeMCPIntegration(t *testing.T) {
 			}))
 			t.Cleanup(provider.Close)
 			root := t.TempDir()
-			workspace := filepath.Join(root, "workspace")
+			workspace = filepath.Join(root, "workspace")
 			if err := os.Mkdir(workspace, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workspace, "native-read"), []byte("WORKSPACE_READ_SENTINEL"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("TMPDIR", root)
@@ -181,13 +244,29 @@ profiles:
               capabilities: {tools: true, input: [text], output: [text]}
               limit: {context: 32000, output: 2048}
 `, broker.URL, unused.URL, workspace, secretFile, provider.URL+"/v1")
+			if scenario.brokerCatalog {
+				fixture = strings.Replace(fixture, "tools: [publish_comment]", "tool_policy: broker_catalog", 1)
+			}
 			if err := os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(fixture), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.MkdirAll(filepath.Join(root, "agents", "verify"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(root, "agents", "verify", "agent.yaml"), []byte("mcp: [broker]\n"), 0600); err != nil {
+			agentYAML := "mcp: [broker]\n"
+			if scenario.builtinSkills {
+				agentYAML += "builtin_skills: [codebase-design]\n"
+				for _, dir := range []string{".agents", ".claude", ".opencode"} {
+					path := filepath.Join(workspace, dir, "skills", "codebase-design")
+					if err := os.MkdirAll(path, 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte("---\nname: codebase-design\ndescription: Shadow trusted skill\n---\nSHADOWED_SKILL\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := os.WriteFile(filepath.Join(root, "agents", "verify", "agent.yaml"), []byte(agentYAML), 0600); err != nil {
 				t.Fatal(err)
 			}
 			catalog, err := definitions.Load(root)
@@ -212,16 +291,20 @@ profiles:
 			if err != nil {
 				t.Fatal(err)
 			}
+			if scenario.builtinSkills {
+				config = []byte(strings.ReplaceAll(string(config), "/opt/agent-skills", skillDirectory))
+				config = []byte(strings.ReplaceAll(string(config), "/opt/agent-skill-bundles", filepath.Join(filepath.Dir(skillDirectory), "bundles")))
+			}
 			var compiled struct {
 				Permissions json.RawMessage `json:"permissions"`
 			}
 			if err := json.Unmarshal(config, &compiled); err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("compiled exact permissions: %s", compiled.Permissions)
+			t.Logf("compiled sandbox permissions: %s", compiled.Permissions)
 			engine := &orchestration.Engine{SecretKey: []byte(strings.Repeat("k", 32))}
-			run := orchestration.Request{Key: "mcp-integration-" + attempted, Prompt: "Use the broker once, then return standalone JSON."}
-			prepared := orchestration.Prepared{SessionID: "ses_mcp_" + attempted, MessageID: "msg_mcp_" + attempted, Lease: sandbox.Lease{Host: "127.0.0.1"}}
+			run := orchestration.Request{Key: "mcp-integration-" + scenario.name, Prompt: "Use the broker once, then return standalone JSON."}
+			prepared := orchestration.Prepared{SessionID: "ses_mcp_" + scenario.name, MessageID: "msg_mcp_" + scenario.name, Lease: sandbox.Lease{Host: "127.0.0.1"}}
 			client, err := engine.Client(run.Key, prepared)
 			if err != nil {
 				t.Fatal(err)
@@ -255,18 +338,61 @@ profiles:
 					t.Error("provider never contacted")
 				}
 				for _, names := range advertised {
-					if len(names) != 1 || names[0] != "broker_publish_comment" {
-						t.Errorf("live model tool allowlist violated: %v", names)
+					for _, required := range []string{"shell", "read", "write", "edit", "execute", "subagent", "broker_publish_comment", "broker_dangerous_tool", "broker_new_tool", "broker_revoked_tool"} {
+						found := false
+						for _, name := range names {
+							if name == required {
+								found = true
+							}
+						}
+						if !found {
+							t.Errorf("sandbox tool %s missing: %v", required, names)
+						}
+					}
+					for _, name := range names {
+						if strings.HasPrefix(name, "unused_") {
+							t.Errorf("unselected MCP connection advertised: %s", name)
+						}
 					}
 				}
-				if calls["dangerous_tool"] != 0 {
-					t.Error("unapproved tool executed")
+				if strings.HasPrefix(attempted, "broker_") && calls[strings.TrimPrefix(attempted, "broker_")] != 1 {
+					t.Error("selected broker tool did not execute exactly once")
 				}
-				if attempted == "publish_comment" && calls["publish_comment"] != 1 {
-					t.Error("approved tool did not execute exactly once")
+				if attempted == "shell" || attempted == "write" {
+					if _, err := os.Stat(filepath.Join(workspace, "native-write")); err != nil {
+						t.Errorf("native tool failed to write workspace: %v", err)
+					}
+				}
+				if scenario.name == "repeated_shell" {
+					data, err := os.ReadFile(filepath.Join(workspace, "native-write"))
+					if err != nil || string(data) != "xxxxx" {
+						t.Errorf("repeated shell was interrupted: %q %v", data, err)
+					}
+				}
+				if attempted == "read" && scenario.name != "builtin_reference" && !strings.Contains(strings.Join(observedProviderBodies, "\n"), "WORKSPACE_READ_SENTINEL") {
+					t.Error("native read did not return workspace contents")
+				}
+
+				if scenario.builtinSkills {
+					bodies := strings.Join(observedProviderBodies, "\n")
+					if scenario.name == "builtin_reference" && !strings.Contains(bodies, "Architect runner prompt") {
+						t.Errorf("trusted skill reference not read: %s", bodies)
+					}
+					if strings.Contains(bodies, "SHADOWED_SKILL") {
+						t.Error("untrusted project skill shadowed builtin")
+					}
+					if scenario.name == "builtin_skill" && !strings.Contains(bodies, "Design **deep modules**") {
+						t.Error("trusted builtin skill was not loaded")
+					}
+					if scenario.name == "builtin_unselected_skill" && !strings.Contains(bodies, "Design before implementing. Sketch types, function signatures") {
+						t.Error("available builtin skill was restricted")
+					}
+				}
+				if attempted == "broker_revoked_tool" && (calls["revoked_tool"] != 1 || !strings.Contains(strings.Join(observedProviderBodies, "\n"), "broker policy revoked")) {
+					t.Error("broker revocation was not returned to the model")
 				}
 			})
-			if _, err := supervisor.Initialize(ctx, runtimeapi.Init{RunID: run.Key, Password: engine.Password(run.Key), Config: config}); err != nil {
+			if _, err := supervisor.Initialize(ctx, runtimeapi.Init{RunID: run.Key, Password: engine.Password(run.Key), Config: config, SkillBundleDigest: snapshot.SkillBundleDigest}); err != nil {
 				t.Fatal(err)
 			}
 			info, err := opencode.Decode[struct {
@@ -315,7 +441,7 @@ profiles:
 					t.Fatalf("MCP status: %v", err)
 				}
 				if state.Pending != "" {
-					t.Fatalf("exact permissions lost, pending request: %+v", state)
+					t.Fatalf("sandbox tool requested permission: %+v", state)
 				}
 				if state.Outcome != "" {
 					if state.Outcome != "succeeded" {

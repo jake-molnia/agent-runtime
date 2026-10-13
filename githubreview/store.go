@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -41,7 +42,7 @@ func OpenStore(ctx context.Context, dsn string) (*PGStore, error) {
  status text NOT NULL CHECK (status IN ('resolved','publishing','completed')),
  review_id bigint NOT NULL DEFAULT 0,
  updated_at timestamptz NOT NULL DEFAULT now()
- )`)
+ ); ALTER TABLE githubreview_records ADD COLUMN IF NOT EXISTS requests jsonb NOT NULL DEFAULT '[]'::jsonb`)
 	if err != nil {
 		return nil, errors.New("initialize GitHub review store failed")
 	}
@@ -70,7 +71,7 @@ func (store *PGStore) WithLock(ctx context.Context, key string, fn func(LockedSt
 }
 func (store *pgLockedStore) Load(ctx context.Context, key string) (Record, bool, error) {
 	var record Record
-	err := store.conn.QueryRow(ctx, "SELECT owner,status,review_id FROM githubreview_records WHERE review_key=$1", key).Scan(&record.Owner, &record.Status, &record.ReviewID)
+	err := store.conn.QueryRow(ctx, "SELECT owner,status,review_id,requests FROM githubreview_records WHERE review_key=$1", key).Scan(&record.Owner, &record.Status, &record.ReviewID, &record.Requests)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Record{}, false, nil
 	}
@@ -80,8 +81,12 @@ func (store *pgLockedStore) Load(ctx context.Context, key string) (Record, bool,
 	return record, true, nil
 }
 func (store *pgLockedStore) Save(ctx context.Context, key string, record Record) error {
-	_, err := store.conn.Exec(ctx, `INSERT INTO githubreview_records(review_key,owner,status,review_id) VALUES($1,$2,$3,$4)
- ON CONFLICT(review_key) DO UPDATE SET owner=EXCLUDED.owner,status=EXCLUDED.status,review_id=EXCLUDED.review_id,updated_at=now()`, key, record.Owner, record.Status, record.ReviewID)
+	raw, err := json.Marshal(record.Requests)
+	if err != nil {
+		return err
+	}
+	_, err = store.conn.Exec(ctx, `INSERT INTO githubreview_records(review_key,owner,status,review_id,requests) VALUES($1,$2,$3,$4,$5)
+ ON CONFLICT(review_key) DO UPDATE SET owner=EXCLUDED.owner,status=EXCLUDED.status,review_id=EXCLUDED.review_id,requests=EXCLUDED.requests,updated_at=now()`, key, record.Owner, record.Status, record.ReviewID, raw)
 	if err != nil {
 		return errors.New("save GitHub review record failed")
 	}

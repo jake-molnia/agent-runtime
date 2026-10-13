@@ -39,6 +39,22 @@ func (fake *fakeRuns) Cancel(ctx context.Context, request rest.V1CancelTaskReque
 func completedRun(value string) *client.RunDetails {
 	return &client.RunDetails{Status: rest.V1TaskStatusCOMPLETED, Done: true, TaskRuns: map[string]*client.TaskRunDetails{"result": {Status: rest.V1TaskStatusCOMPLETED, Output: json.RawMessage(`{"value":` + value + `}`)}}}
 }
+
+func TestScheduledRunResultUsesPinnedDispatchTask(t *testing.T) {
+	id := uuid.New()
+	details := completedRun(`{"report":"scheduled report"}`)
+	details.Input = json.RawMessage(`{"digest":"pinned-revision","input":{}}`)
+	details.TaskRuns["dispatch-pinned-revision"] = details.TaskRuns["result"]
+	delete(details.TaskRuns, "result")
+	var out bytes.Buffer
+	if err := printRunResult(context.Background(), &fakeRuns{states: []*client.RunDetails{details}}, id, false, true, &out); err != nil || out.String() != "scheduled report\n" {
+		t.Fatalf("scheduled result: %q %v", out.String(), err)
+	}
+	details.Input = json.RawMessage(`{"digest":"other-revision"}`)
+	if _, err := waitRunResult(context.Background(), &fakeRuns{states: []*client.RunDetails{details}}, id, false, time.Millisecond); err == nil {
+		t.Fatal("accepted another revision's dispatch output")
+	}
+}
 func TestRunResultStatesAndRendering(t *testing.T) {
 	id := uuid.New()
 	for _, value := range []string{`"finished"`, `{"status":"completed","report":"finished","sources":[],"notebook":"notes"}`} {

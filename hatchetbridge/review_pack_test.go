@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jake-molnia/agent-runtime/definitions"
+	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/messages"
 	"github.com/jake-molnia/agent-runtime/workflows"
 )
@@ -22,6 +23,25 @@ func TestRuntimeOwnedReviewPackExecutesWithoutCopiedAgentFiles(t *testing.T) {
 		catalog.Agents[name] = agent
 	}
 	plan := configuredTestCapture(t, workflows.Workflow{Name: "review-change", Use: "pr-review"}, catalog)
+	candidate := githubreview.Candidate{Priority: "P2", Path: "app.go", Line: 1, Title: "Issue", Explanation: "Supported finding"}
+	for _, count := range []int{15, 16} {
+		candidates := make([]githubreview.Candidate, count)
+		sources := make([]int, count)
+		for index := range candidates {
+			candidates[index], sources[index] = candidate, index
+		}
+		report, _ := json.Marshal(githubreview.CandidateReview{Summary: "Verified", Findings: candidates})
+		err := plan.Agents["verify"].ValidateOutput(report)
+		if (err == nil) != (count == 15) {
+			t.Fatalf("verifier does not match publication bounds for %d findings: %v", count, err)
+		}
+		if count == 15 {
+			wording, _ := json.Marshal(githubreview.Writeup{Assessment: "Requires correction", Findings: []githubreview.FindingWording{{Sources: sources, Title: "Issue", Explanation: "Supported finding"}}})
+			if _, err := githubreview.Reduce([]json.RawMessage{report}, wording); err != nil {
+				t.Fatalf("valid bounded pack findings cannot publish: %v", err)
+			}
+		}
+	}
 	backend := newConfiguredTestBackend(t)
 	report := json.RawMessage(`{"summary":"Checked the pinned change","findings":[],"limitations":""}`)
 	for _, step := range []string{"review", "adversarial", "security", "dependencies", "verify"} {
@@ -40,6 +60,9 @@ func TestRuntimeOwnedReviewPackExecutesWithoutCopiedAgentFiles(t *testing.T) {
 	}
 	result := fixture.runStep(t, "result")
 	configuredTestJSON(t, result.Value, backend.outputs["writeup"])
+	if _, err := githubreview.Reduce([]json.RawMessage{backend.outputs["verify"]}, result.Value); err != nil {
+		t.Fatalf("bundled review output is incompatible with publication adapter: %v", err)
+	}
 	if len(backend.calls) != 7 {
 		t.Fatalf("executed %d agents", len(backend.calls))
 	}

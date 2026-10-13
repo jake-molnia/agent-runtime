@@ -1,0 +1,4 @@
+version: 1
+model: {provider: aperture, id: glm-5.3}
+mcp: [aperture]
+output_schema: output.schema.json

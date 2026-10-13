@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestOutputContractReachesModelAndLegacyReplayStaysStable(t *testing.T) {
+func TestOutputContractReachesModelAndRejectsLegacyPolicy(t *testing.T) {
 	catalog := loaded(t, fixture(t))
 	snapshot, err := catalog.Snapshot("reviewer")
 	if err != nil {
@@ -31,7 +31,7 @@ func TestOutputContractReachesModelAndLegacyReplayStaysStable(t *testing.T) {
 		return config.Agents["authored"].System
 	}
 	current := modelSystem(snapshot)
-	if !strings.Contains(current, "# Required output contract") || !strings.Contains(current, string(snapshot.Agent.Schema)) {
+	if !strings.Contains(current, "# Output format") || !strings.Contains(current, string(snapshot.Agent.Schema)) {
 		t.Fatalf("schema not supplied to model: %s", current)
 	}
 	newDigest := snapshot.Agent.Digest
@@ -40,7 +40,10 @@ func TestOutputContractReachesModelAndLegacyReplayStaysStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Agent.Digest == newDigest || strings.Contains(modelSystem(snapshot), "# Required output contract") {
-		t.Fatal("new compiler behavior changed a legacy replay")
+	if snapshot.Agent.Digest == newDigest {
+		t.Fatal("compiler policy not pinned")
+	}
+	if _, err := snapshot.Definition(); err == nil {
+		t.Fatal("legacy policy accepted by unrestricted worker")
 	}
 }

@@ -12,7 +12,7 @@
     },
     "findings": {
       "type": "array",
-      "maxItems": 60,
+      "maxItems": 15,
       "items": {
         "type": "object",
         "additionalProperties": false,

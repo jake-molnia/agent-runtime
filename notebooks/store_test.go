@@ -224,9 +224,9 @@ func TestCorruptionAndPinnedBase(t *testing.T) {
 func TestPayloadLimitsAndNullNotebook(t *testing.T) {
 	ctx := context.Background()
 	store := Directory{Root: t.TempDir()}
-	nearLimit := json.RawMessage(`"` + strings.Repeat("x", (1<<20)-2) + `"`)
+	nearLimit := json.RawMessage(`"` + strings.Repeat("<", maxPayloadBytes-2) + `"`)
 	if _, err := store.Begin(ctx, "job", "one", "digest", nearLimit); err != nil {
-		t.Fatalf("1 MiB input rejected: %v", err)
+		t.Fatalf("4 MiB input rejected: %v", err)
 	}
 	if _, err := store.Begin(ctx, "job", "two", "digest", append(nearLimit, ' ')); err == nil {
 		t.Fatal("oversized input accepted")
@@ -272,7 +272,7 @@ func TestValidateOutput(t *testing.T) {
 		json.RawMessage(`{"status":"unknown","notebook":"notes"}`),
 		json.RawMessage(`{"status":"completed","notebook":"` + strings.Repeat("x", MaxNotebookBytes+1) + `"}`),
 		json.RawMessage(`{"status":"completed","notebook":"notes",`),
-		json.RawMessage(`"` + strings.Repeat("x", 1<<20) + `"`),
+		json.RawMessage(`"` + strings.Repeat("x", maxPayloadBytes) + `"`),
 	} {
 		if err := ValidateOutput(output); err == nil {
 			t.Fatalf("accepted invalid output %q", output[:min(len(output), 80)])

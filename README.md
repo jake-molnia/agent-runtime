@@ -5,7 +5,7 @@ sandboxes, native OpenCode V2 sessions, and immutable typed message handoffs.
 It ships general agent presets and a bundled seven-agent PR review workflow.
 Role instructions, schemas, and bundled graphs belong to this runtime.
 Workflows are opt-in configuration, including simple cron-triggered agents with
-durable notebooks. Agents investigate using explicitly granted native or MCP tools.
+durable notebooks. Agents investigate using the sandbox harness and deployment-selected MCP tools.
 
 OpenCode V2 is the only supported agent harness. The sandbox installs the upstream
 `@opencode/cli` package pinned to 2.0.26 and exposes its `opencode` executable on
@@ -24,9 +24,9 @@ bin/agent-runtime workflows init price-watcher monitor-deals
 bin/agent-runtime agents validate
 ```
 
-Edit the generated brief and grant the tools the agent needs. The same command
-creates starters for `researcher`, `daily-brief`, `upstreamer`, and every other
-builtin. Existing files are never overwritten. Schedules start commented out.
+Edit the generated brief and configure the agent's external access. The same
+command creates starters for `researcher`, `daily-brief`, `upstreamer`, and the
+other general-purpose presets. Existing files are never overwritten. Schedules start commented out.
 
 Configure Hatchet, sandbox pools, credentials, and shared state as described in
 [setup](docs/agent-automations.md). Notebook workflows also require a stable
@@ -117,5 +117,13 @@ task returns the selected output value and its immutable message reference.
 
 Read [setup and ownership](docs/agent-automations.md),
 [defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).
-GitHub remains an optional adapter library; no GitHub identity, workflow or secret
-configuration is required to use the runtime.
+GitHub review automation is an [optional trusted integration](docs/github-review.md);
+no GitHub identity, workflow or secret configuration is required for generic workers.
+The images include [pinned engineering skills](docs/sandbox-skills.md).
+
+See [container releases](docs/releases.md) for versioned and nightly GHCR images,
+and [config worker replacement](docs/config-runtime-replacement.md) for the current
+integration and deployment gaps.
+
+Sandbox harness defaults are checked in under [harnesses](harnesses/README.md)
+and copied into the images. OpenCode runs with unrestricted tool permissions.

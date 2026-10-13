@@ -54,7 +54,7 @@ trusted-package file rules. Standalone packages still require instructions.
 
 ## Approve MCP tools
 
-The deployment configuration approves remote broker connections and exact tools:
+The deployment configuration selects remote MCP connections:
 
 ```yaml
 version: 1
@@ -64,7 +64,6 @@ defaults:
 mcp_servers:
   issue-comments:
     url: https://approved-broker.internal/mcp
-    tools: [publish_comment]
 profiles:
   investigation:
     pool: agent-pool
@@ -81,13 +80,18 @@ connections enter the native session configuration. URLs reject credentials,
 query strings and fragments. HTTPS is required except literal-loopback HTTP for
 local testing. Arbitrary local subprocess MCP servers are not supported.
 
-The pinned native config starts with deny-all and grants exact approved MCP
-actions plus native actions explicitly selected by the agent and granted by its
-profile. Native `tools` supports read, glob, grep, edit, shell, and webfetch.
-Interactive OAuth enrollment remains unavailable. OpenCode initializes and manages the remote
-MCP connections within each isolated session; deleting the sandbox terminates them.
-Use deployment-managed network identity/TLS for the approved broker. This format
-does not put bearer tokens or private keys into workflow snapshots.
+New snapshots allow all native tools inside the disposable sandbox, including
+shell, filesystem access, execute, and subagents. The sandbox image runs as root.
+Config chooses MCP endpoints; every tool exposed by a selected connection is
+available locally. Aperture remains responsible for remote authorization.
+`tools` and `tool_policy` are accepted as legacy metadata, not enforcement.
+
+With profile tags and `APERTURE_UPSTREAM` on the sandbox,
+`http://127.0.0.1:8082/v1/mcp` reaches Aperture through that sandbox's ephemeral
+identity. Builtin skills activate the packaged catalog. Project configuration
+remains suppressed so repository files cannot silently replace pinned prompts
+or deployment-selected endpoints. The agent can still execute arbitrary code
+inside its sandbox. The trusted system instructions include the output schema.
 
 The publishing broker must enforce repository/resource authorization, payload
 validation, revision checks, and deduplication. Instructions cannot authorize an
@@ -124,7 +128,7 @@ References imply dependencies. Independent root steps can run in parallel.
 Every step must contribute to the selected output. Cycles, unknown references,
 duplicate/unknown YAML fields, invalid names, malformed refs and missing schemas
 fail before registration. A workflow has at most 32 steps; values are bounded to
-1 MiB. No selectors, interpolation, expression language or executable hooks are
+4 MiB. No selectors, interpolation, expression language or executable hooks are
 loaded from YAML.
 
 The result task returns `value`, the selected step's complete JSON result, along
@@ -160,10 +164,10 @@ agent-runtime worker
 agent-runtime run review-change --input input.json
 ```
 
-The worker registers only configured workflow files. It fails explicitly if none
-exist. There is no automatically registered `agent-run` or GitHub review graph,
-no GitHub App/private-key/webhook/database prerequisite, and no custom Go worker
-needed for declarative workflows. Adapters can normalize events and submit the
+The worker registers configured workflow files and any explicitly enabled
+[GitHub review integration](github-review.md). It fails if no workflows exist.
+Generic workflows have no GitHub App/private-key/webhook/database prerequisite
+and need no custom Go worker. Adapters can normalize events and submit the
 same configured workflow, or expose authorized MCP operations.
 
 `agents defaults|list|inspect` and `workflows list|inspect` provide diagnostics.
@@ -180,7 +184,8 @@ profiles and public MCP bindings. CLI submission pins a digest. Resolve and each
 task reload that artifact, not mutable source files. Old prompts, models and
 grants do not silently change when a new catalog is deployed.
 
-Keep the shared snapshots and message directory available to all eligible workers.
+Scheduler action names include snapshot revision identity. Keep the shared snapshots
+and message directory available to all eligible workers.
 Do not remove referenced snapshots. Maintain compatible workers while changing
 step names or topology; a worker without an old task handler cannot execute it.
 Changing current authoring is not retroactive revocation of old pinned grants.
@@ -189,8 +194,7 @@ sessions keep their bootstrap credentials.
 
 Each step is a durable Hatchet task and has its own sandbox/session identity.
 It uses the existing native lifecycle, exports before validation/cleanup, retains
-failed exports until lease expiry, and reports cleanup failures. Permissions are
-not auto-approved. Completed message outputs are immutable and reusable on replay.
+failed exports until lease expiry, and reports cleanup failures. Native tool execution requires no permission prompts. Completed message outputs are immutable and reusable on replay.
 No automatic model-execution retries are enabled; explicit replay can recompute
 after a crash between successful execution and message persistence. Exactly-once
 model execution is not claimed. Private input/output belongs in secured Hatchet,

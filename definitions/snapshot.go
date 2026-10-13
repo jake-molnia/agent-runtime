@@ -11,22 +11,24 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
+	"github.com/jake-molnia/agent-runtime/harnesses"
+	runtimeapi "github.com/jake-molnia/agent-runtime/runtime"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type Snapshot struct {
-	Agent          Agent                `json:"agent"`
-	Profile        Profile              `json:"profile"`
-	MCPServers     map[string]MCPServer `json:"mcp_servers,omitempty"`
-	CompiledPolicy string               `json:"compiled_policy,omitempty"`
+	HarnessConfigDigest string               `json:"harness_config_digest"`
+	SkillBundleDigest   string               `json:"skill_bundle_digest,omitempty"`
+	Agent               Agent                `json:"agent"`
+	Profile             Profile              `json:"profile"`
+	MCPServers          map[string]MCPServer `json:"mcp_servers,omitempty"`
+	CompiledPolicy      string               `json:"compiled_policy,omitempty"`
 }
 
-const compiledPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-deny-all:v1"
-const compiledMCPPolicy = "opencode-v2.0.26:authored-primary:global-and-agent-exact-mcp:ready-no-title:v2"
-const compiledSchemaPolicy = "opencode-v2.0.26:authored-primary:deny-all:output-contract:v3"
-const compiledMCPSchemaPolicy = "opencode-v2.0.26:authored-primary:exact-mcp:ready-no-title:output-contract:v3"
+const compiledPolicy = "opencode-v2.0.26:authored-primary:sandbox-unrestricted:repo-harness-config:schema-system:v6"
 
 func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	agent, exists := catalog.Agents[name]
@@ -37,7 +39,7 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 	if !exists {
 		return Snapshot{}, fmt.Errorf("agent %s: unknown profile: %s", name, agent.Execution.Profile)
 	}
-	snapshot := Snapshot{Agent: agent, Profile: profile}
+	snapshot := Snapshot{Agent: agent, Profile: profile, CompiledPolicy: compiledPolicy, HarnessConfigDigest: harnesses.OpenCodeDigest()}
 	for _, name := range agent.MCP {
 		server, exists := catalog.MCPServers[name]
 		if !exists {
@@ -48,17 +50,17 @@ func (catalog *Catalog) Snapshot(name string) (Snapshot, error) {
 		}
 		snapshot.MCPServers[name] = server
 	}
-	if len(snapshot.MCPServers) > 0 {
-		snapshot.CompiledPolicy = compiledMCPPolicy
-	}
-	if len(agent.Schema) > 0 {
-		snapshot.CompiledPolicy = compiledSchemaPolicy
-		if len(snapshot.MCPServers) > 0 {
-			snapshot.CompiledPolicy = compiledMCPSchemaPolicy
+	if len(snapshot.Agent.BuiltinSkills) > 0 {
+		bundle, err := runtimeapi.ReadSkillBundle()
+		if err != nil {
+			return Snapshot{}, err
 		}
-	}
-	if len(agent.Tools) > 0 {
-		snapshot.CompiledPolicy = snapshot.nativePolicy()
+		for _, name := range agent.BuiltinSkills {
+			if !contains(bundle.Names, name) {
+				return Snapshot{}, fmt.Errorf("unknown builtin skill: %s", name)
+			}
+		}
+		snapshot.SkillBundleDigest = bundle.Digest
 	}
 	if err := snapshot.validate(); err != nil {
 		return Snapshot{}, fmt.Errorf("agent %s: %w", name, err)
@@ -94,14 +96,12 @@ func (snapshot Snapshot) ValidateOutput(output json.RawMessage) error {
 }
 
 func (snapshot Snapshot) validate() error {
-	agent := snapshot.Agent
-	if err := validateNativeTools(agent.Tools); err != nil {
-		return err
+	if snapshot.HarnessConfigDigest != harnesses.OpenCodeDigest() {
+		return errors.New("harness configuration differs from pinned snapshot; use the matching worker image or reload definitions")
 	}
-	for _, action := range agent.Tools {
-		if !contains(snapshot.Profile.Tools, action) {
-			return fmt.Errorf("profile does not grant native tool action: %s", action)
-		}
+	agent := snapshot.Agent
+	if err := validateMCPReferences(agent.BuiltinSkills); err != nil {
+		return fmt.Errorf("builtin_skills: %w", err)
 	}
 	if err := validateMCPReferences(agent.MCP); err != nil {
 		return err
@@ -112,12 +112,17 @@ func (snapshot Snapshot) validate() error {
 	if len(agent.MCP) != len(snapshot.MCPServers) {
 		return errors.New("snapshot must contain only selected MCP bindings")
 	}
-	if len(agent.Tools) > 0 {
-		if snapshot.CompiledPolicy != snapshot.nativePolicy() {
-			return errors.New("unsupported compiled policy")
+	if len(agent.BuiltinSkills) > 0 {
+		digest, err := hex.DecodeString(snapshot.SkillBundleDigest)
+		if err != nil || len(digest) != sha256.Size || strings.ToLower(snapshot.SkillBundleDigest) != snapshot.SkillBundleDigest {
+			return errors.New("builtin skills require a pinned bundle digest")
 		}
-	} else if len(agent.MCP) > 0 && snapshot.CompiledPolicy != compiledMCPPolicy && snapshot.CompiledPolicy != compiledMCPSchemaPolicy || len(agent.MCP) == 0 && snapshot.CompiledPolicy != "" && snapshot.CompiledPolicy != compiledSchemaPolicy {
-		return errors.New("unsupported compiled policy")
+	}
+	if len(agent.BuiltinSkills) == 0 && snapshot.SkillBundleDigest != "" {
+		return errors.New("skill bundle digest without selected skills")
+	}
+	if snapshot.CompiledPolicy != compiledPolicy {
+		return errors.New("unsupported compiled policy: drain old runs with their original worker, then reload definitions for sandbox-unrestricted v6")
 	}
 	for _, name := range agent.MCP {
 		if _, exists := snapshot.MCPServers[name]; !exists {
@@ -168,9 +173,15 @@ func (snapshot Snapshot) validate() error {
 	return err
 }
 
+var policyTag = regexp.MustCompile(`^tag:[a-z][a-z0-9-]*$`)
+
 func validateProfile(profile Profile) error {
-	if err := validateNativeTools(profile.Tools); err != nil {
-		return err
+	seenTags := map[string]bool{}
+	for _, tag := range profile.Tags {
+		if !policyTag.MatchString(tag) || seenTags[tag] {
+			return fmt.Errorf("invalid or duplicate policy tag: %q", tag)
+		}
+		seenTags[tag] = true
 	}
 	if err := validateMCPReferences(profile.MCP); err != nil {
 		return err

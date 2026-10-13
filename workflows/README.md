@@ -24,7 +24,7 @@ whole step results. `ResolveInput(step, initial, parents)` clones a scalar
 reference's whole JSON value, or returns an array of whole values in list order.
 A one-element list remains an array. Objects, arrays, strings, booleans, numbers,
 and null are supported. Missing or malformed values fail. Referenced values and
-the resolved input must each fit within `MaxInputBytes`, 1 MiB. There are no
+the resolved input must each fit within `MaxInputBytes`, 4 MiB. There are no
 selectors, expressions, or prompt interpolation.
 
 `Capture(workflow, catalog)` resolves agents by step ID into a `Snapshot` and
@@ -67,7 +67,8 @@ overrides it; without an override, `run NAME` uses that default. Explicit `null`
 is a valid default and differs from an omitted input.
 
 An optional `schedule: {cron: "0 8 * * *", timezone: Europe/London}` adds a Hatchet
-cron trigger. Expressions have five fields; timezone defaults to UTC. The cron
+cron trigger. Expressions have five fields; timezone defaults to UTC. A stable `schedule-<name>` dispatcher owns the cron trigger; immutable workflow
+revisions have no cron triggers of their own. The cron
 input pins the complete workflow digest and default input. The agent/model/brief
 used by a submitted run cannot silently change when source files change. Local
 parser tests cover timezone transitions; actual timing is provided by Hatchet.
@@ -84,8 +85,8 @@ All workers for one deployment must use the same shared directory and ID. Use
 different deployment IDs for independent owners; these are trusted operator
 settings, not end-user authorization.
 
-Hatchet limits a notebook workflow to one active run and cancels overlapping new
-runs. Resolve pins the previous notes per run. Successful validated outputs commit
+Hatchet limits each notebook to one active run across workflow revisions and
+cancels overlapping new runs. Resolve pins the previous notes per run. Successful validated outputs commit
 a new immutable notebook revision; blocked outputs preserve the previous text.
 Failed executions do not update notes. Replay returns the original revision and
 cannot regress newer notes. Filesystem locking and revision checks protect commits.
@@ -96,6 +97,7 @@ The runtime exposes reports through Hatchet and `runs result`; sending to anothe
 channel requires a configured tool or external consumer. Output persistence does
 not guarantee exactly-once external actions.
 
-Remove cron schedules through Hatchet when retiring a workflow. Removing its YAML
+Removing `schedule` and restarting the worker updates the stable dispatcher to
+clear its triggers. Remove cron schedules through Hatchet when retiring a workflow. Removing its YAML
 alone does not establish that existing server-side schedules have been deleted.
 Keep compatible workers and snapshots for runs that are already queued.
