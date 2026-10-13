@@ -108,13 +108,15 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 		if err != nil {
 			return result, err
 		}
-		guarded, stopGuard, err := watchStage(ctx.GetContext(), 15*time.Second, func(checkCtx context.Context) error { return CheckReview(checkCtx, reload, handler, resolved.Input) })
+		original := ctx.GetContext()
+		guarded, stopGuard, err := watchStage(original, 15*time.Second, func(checkCtx context.Context) error { return CheckReview(checkCtx, reload, handler, resolved.Input) })
 		if err != nil {
 			return result, err
 		}
 		defer stopGuard()
 		ctx.SetContext(guarded)
-		childResult, err := runReviewChild(ctx, client, child, ConfiguredInput{Digest: plan.Digest, Input: input}, ReviewLabels(config))
+		defer ctx.SetContext(original)
+		childResult, err := runChildWorkflow(ctx, client, child, ConfiguredInput{Digest: plan.Digest, Input: input}, ReviewLabels(config))
 		if err != nil {
 			return result, err
 		}

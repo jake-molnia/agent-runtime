@@ -1,0 +1,12 @@
+version: 1
+input:
+  brief: >-
+    Research practical options for running a small team's integration tests faster.
+    Explore current primary documentation and independent measurements. Compare
+    tradeoffs, identify evidence gaps, and write a sourced recommendation.
+notebook: true
+steps:
+  investigate:
+    agent: researcher
+    input: input
+output: investigate

@@ -12,7 +12,8 @@ func TestDesktopExampleAgentConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range BuiltinNames() {
+	// These examples opt into desktop tools; other built-in presets keep their own tool policy.
+	for _, name := range []string{"code-review", "verify", "adversarial-review"} {
 		t.Run(name, func(t *testing.T) {
 			definition, err := catalog.Resolve(name)
 			if err != nil {

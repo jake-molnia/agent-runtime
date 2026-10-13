@@ -1,0 +1,1 @@
+Investigate the incident described in this task. Establish user impact and a dated timeline, correlate logs/metrics/traces with changes, test competing explanations, and recommend the next useful checks. Supply the service, incident window and timezone, symptoms, and available evidence. Diagnose and suggest mitigations; production changes require separate authorization.

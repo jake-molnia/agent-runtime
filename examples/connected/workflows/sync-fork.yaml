@@ -1,0 +1,24 @@
+version: 1
+input:
+  brief: >-
+    Integrate upstream changes in an isolated branch while preserving our fork's
+    intentional behavior. Require real repositories, customizations, protected paths,
+    and test commands before doing integration work. Inspect both starting revisions,
+    resolve only understood conflicts, test the exact integrated revision, and produce
+    a reviewable patch. Never reset the fork to upstream or force-push.
+  # Replace all placeholders and supply the fork's actual preservation requirements.
+  upstream: REPLACE_WITH_UPSTREAM_REPOSITORY
+  upstream_ref: main
+  fork: REPLACE_WITH_FORK_REPOSITORY
+  target_branch: main
+  integration_strategy: merge
+  customizations: [REPLACE_WITH_LOCAL_BEHAVIOR_TO_PRESERVE]
+  protected_paths: [REPLACE_WITH_PROTECTED_PATHS]
+  required_checks: [REPLACE_WITH_TEST_COMMANDS]
+  merge_policy: prepare-only
+notebook: true
+steps:
+  integrate:
+    agent: upstreamer
+    input: input
+output: integrate

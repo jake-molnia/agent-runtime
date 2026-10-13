@@ -85,7 +85,7 @@ They contain no model, execution profile, path, tool grants, or workflow pipelin
 The instructions operate on supplied input and require evidence for conclusions.
 
 When deployment `defaults` is present, the catalog resolves and snapshots all
-three built-ins. Its model and execution fields also supply omitted settings for
+23 built-ins. Its model and execution fields also supply omitted settings for
 authored agents. Without `defaults`, legacy explicit packages load as before;
 built-ins are not automatically registered. A referenced inherited agent must
 still resolve a model, profile, and valid timeout.
@@ -102,6 +102,17 @@ Present YAML fields override defaults, including individual model and execution
 fields. An absent `instructions.md` preserves inherited instructions; a present
 file replaces them entirely. `output_schema` replaces the generic schema with
 the named file. Built-in lookups return independent values.
+
+Thirteen general-purpose presets return a structured result with `status`, `report`,
+`sources`, and `notebook`. Their descriptions and contracts are in the
+[preset guide](../docs/presets.md). All presets remain free of model choices and
+tool grants. `BuiltinNames()` is the authoritative catalog.
+
+## Native tools
+
+Native tools follow the checked-in unrestricted sandbox harness. Agent/profile
+`tools` allowlists from the unmerged preset work are not part of this format.
+The disposable container and its network policy are the isolation boundary.
 
 ## Remote MCP grants
 
@@ -188,6 +199,10 @@ references are supported; external resources cannot be fetched.
 `Snapshot.ValidateOutput` checks the stored digest, parses exactly one JSON
 value, and validates it against the compiled schema. It fails if no schema exists.
 
+The compiler supplies the selected schema in the trusted system instructions.
+Its policy and the checked-in harness digest are pinned together. Older policies
+must drain using their matching worker rather than silently changing permissions.
+
 ## Snapshot storage
 
 `Catalog.Save(root)` saves every resolved agent under
@@ -223,3 +238,8 @@ and digest, not the current source catalog. Secret bindings remain late-bound.
 go test -race ./definitions
 go vet ./definitions
 ```
+
+The seven `pr-*` roles belong to the runtime's bundled `pr-review` workflow. Their
+review/report schemas differ from the general-purpose notebook envelope. All
+role instructions use `builtins/<name>/instructions.md`; shared schemas use
+`schemas/*.json`. No prompt files need to be copied into a deployment to use them.

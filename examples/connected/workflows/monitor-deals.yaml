@@ -1,0 +1,14 @@
+version: 1
+input:
+  brief: >-
+    Find a worthwhile 32-inch OLED monitor deal delivered in the UK below GBP 700.
+    Discover shops beyond known sources. Check exact variants, condition, reviews,
+    warranty, stock, shipping, and offer conditions. New or manufacturer-refurbished
+    is acceptable; exclude used marketplace listings. Compare previous notes and
+    avoid repeating unchanged recommendations. Do not purchase or contact sellers.
+notebook: true
+steps:
+  shop:
+    agent: price-watcher
+    input: input
+output: shop

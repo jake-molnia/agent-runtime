@@ -1,0 +1,18 @@
+version: 1
+# This dedicated example enables a real daily schedule when a worker loads it.
+schedule:
+  cron: '0 8 * * *'
+  timezone: Europe/London
+input:
+  brief: >-
+    Every morning, explore developments in developer tools, AI, hardware, and security.
+    Select the stories worth my time, read original sources, and write a concise,
+    lively briefing with concrete technical explanations and source links. Check
+    previous editions and follow up only when something meaningful changed.
+    Save useful sources, coverage, corrections, and open leads for tomorrow.
+notebook: true
+steps:
+  write:
+    agent: daily-brief
+    input: input
+output: write

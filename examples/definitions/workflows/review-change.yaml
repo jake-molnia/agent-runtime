@@ -7,5 +7,5 @@ steps:
     input: input
   verify:
     agent: verify
-    input: [review, adversarial]
+    input: [input, review, adversarial]
 output: verify
