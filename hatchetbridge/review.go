@@ -87,7 +87,7 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 		for _, action := range config.Actions {
 			events = append(events, "github:pull_request:"+action)
 		}
-		options = append(options, hatchet.WithWorkflowEvents(events...), hatchet.WithDefaultFilters(hatchet.DefaultFilter{Expression: "!input.pull_request.draft && input.pull_request.state == 'open'", Scope: config.Name}))
+		options = append(options, hatchet.WithWorkflowEvents(events...), hatchet.WithDefaultFilters(hatchet.DefaultFilter{Expression: "!input.pull_request.draft && input.pull_request.state == 'open'", Scope: config.Name, Payload: map[string]any{}}))
 	}
 	workflow := client.NewWorkflow(config.Name, options...)
 	resolveName := ConfiguredWorkflowName("resolve", revision)
