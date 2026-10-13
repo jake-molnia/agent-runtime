@@ -52,7 +52,7 @@ func RegisterReviewIngress(client *hatchet.Client, config githubreview.Integrati
 		defer stopGuard()
 		ctx.SetContext(guarded)
 		defer ctx.SetContext(original)
-		result, err := runReviewChild(ctx, client, adapter, input, ReviewLabels(config))
+		result, err := runChildWorkflow(ctx, client, adapter, input, ReviewLabels(config))
 		if err != nil {
 			return githubreview.Outcome{}, err
 		}
@@ -63,7 +63,7 @@ func RegisterReviewIngress(client *hatchet.Client, config githubreview.Integrati
 	return ingress, nil
 }
 
-func runReviewChild(ctx hatchet.DurableContext, client *hatchet.Client, child *hatchet.Workflow, input any, labels map[string]*hatchet.DesiredWorkerLabel) (*hatchet.WorkflowResult, error) {
+func runChildWorkflow(ctx hatchet.DurableContext, client *hatchet.Client, child *hatchet.Workflow, input any, labels map[string]*hatchet.DesiredWorkerLabel) (*hatchet.WorkflowResult, error) {
 	ref, err := child.RunNoWait(ctx, input, hatchet.WithDesiredWorkerLabels(labels))
 	if err != nil {
 		return nil, err

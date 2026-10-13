@@ -14,13 +14,13 @@ func TestConfiguredHookReceivesCanonicalInitialInputBeforeEveryStage(t *testing.
 	fixture := newConfiguredTestFixture(t)
 	var seen []ConfiguredStep
 	denied := errors.New("disabled")
-	workflow, err := RegisterConfiguredWorkflow(offlineLifecycleClient(t), fixture.backend, fixture.store, fixture.root, fixture.plan, ConfiguredHooks{BeforeStep: func(ctx context.Context, step ConfiguredStep) (context.Context, func(), error) {
+	workflow, err := RegisterConfiguredWorkflow(offlineLifecycleClient(t), fixture.backend, fixture.store, fixture.root, fixture.plan, ConfiguredOptions{Hooks: []ConfiguredHooks{{BeforeStep: func(ctx context.Context, step ConfiguredStep) (context.Context, func(), error) {
 		seen = append(seen, step)
 		if step.Step == "verify" {
 			return nil, nil, denied
 		}
 		return ctx, func() {}, nil
-	}})
+	}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

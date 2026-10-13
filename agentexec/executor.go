@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/jake-molnia/agent-runtime/definitions"
 	"github.com/jake-molnia/agent-runtime/messages"
 	"github.com/jake-molnia/agent-runtime/orchestration"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type Backend interface {
@@ -218,7 +220,7 @@ func (executor *Executor) Run(ctx context.Context, snapshot definitions.Snapshot
 		if err != nil {
 			err = backendError{operation: "output read", cause: err}
 		} else if validationErr := pinned.ValidateOutput(output); validationErr != nil {
-			err = errors.New("agent output schema validation failed")
+			err = outputValidationError(validationErr)
 		}
 	}
 	err = errors.Join(err, boundedCleanup(ctx, func(cleanupCtx context.Context) error {
@@ -228,4 +230,25 @@ func (executor *Executor) Run(ctx context.Context, snapshot definitions.Snapshot
 		return nil, err
 	}
 	return append(json.RawMessage(nil), output...), nil
+}
+
+func outputValidationError(cause error) error {
+	var invalid *jsonschema.ValidationError
+	if !errors.As(cause, &invalid) {
+		return errors.New("agent output schema validation failed")
+	}
+	for len(invalid.Causes) > 0 {
+		invalid = invalid.Causes[0]
+	}
+	path := ""
+	for _, part := range invalid.InstanceLocation {
+		path += "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(part)
+	}
+	if path == "" {
+		path = "/"
+	}
+	if len(path) > 160 {
+		path = path[:160] + "..."
+	}
+	return fmt.Errorf("agent output schema validation failed at %q (%s)", path, strings.Join(invalid.ErrorKind.KeywordPath(), "/"))
 }

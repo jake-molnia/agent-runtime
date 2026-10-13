@@ -1,0 +1,11 @@
+version: 1
+# Supply --input with your actual public fork/upstream URLs, refs, customizations,
+# protected paths, and required tests. This workflow has no default task or schedule.
+# Set merge_policy: prepare-only in that input. No git hosting credentials or
+# publication service are configured by this example.
+notebook: true
+steps:
+  integrate:
+    agent: upstreamer
+    input: input
+output: integrate

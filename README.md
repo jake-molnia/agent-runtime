@@ -2,12 +2,77 @@
 
 A Go runtime for config-owned agents and workflows, using Hatchet, isolated
 sandboxes, native OpenCode V2 sessions, and immutable typed message handoffs.
-It ships generic `code-review`, `verify`, and `adversarial-review` agent defaults.
-It does not ship or register production workflows.
+It ships general agent presets and a bundled seven-agent PR review workflow.
+Role instructions, schemas, and bundled graphs belong to this runtime.
+Workflows are opt-in configuration, including simple cron-triggered agents with
+durable notebooks. Agents investigate using the sandbox harness and deployment-selected MCP tools.
 
 OpenCode V2 is the only supported agent harness. The sandbox installs the upstream
 `@opencode/cli` package pinned to 2.0.26 and exposes its `opencode` executable on
 `PATH`. `OPENCODE_BINARY` can select another path to an OpenCode V2 binary.
+
+## Start with a preset
+
+Build the CLI and select a trusted configuration directory containing your
+`deployment.yaml` with model and execution defaults:
+
+```sh
+make build
+export AGENT_DEFINITIONS_DIR=/path/to/config
+bin/agent-runtime workflows templates
+bin/agent-runtime workflows init price-watcher monitor-deals
+bin/agent-runtime agents validate
+```
+
+Edit the generated brief and configure the agent's external access. The same
+command creates starters for `researcher`, `daily-brief`, `upstreamer`, and the
+other general-purpose presets. Existing files are never overwritten. Schedules start commented out.
+
+Configure Hatchet, sandbox pools, credentials, and shared state as described in
+[setup](docs/agent-automations.md). Notebook workflows also require a stable
+`AGENT_DEPLOYMENT_ID` and shared `AGENT_NOTEBOOK_DIR`, default `/state/notebooks`.
+After starting the worker, run and read a result:
+
+```sh
+bin/agent-runtime run monitor-deals --wait --text
+bin/agent-runtime runs inspect RUN_ID
+bin/agent-runtime runs result RUN_ID --wait --text
+bin/agent-runtime runs cancel RUN_ID
+```
+
+A recurring brief is one agent doing its own research:
+
+```yaml
+input:
+  brief: Explore today's AI and developer-tool news. Explain the useful stories with sources.
+schedule:
+  cron: "0 8 * * *"
+  timezone: Europe/London
+notebook: true
+steps:
+  brief: {agent: daily-brief, input: input}
+output: brief
+```
+
+The agent receives its task and previous notebook, then returns a Markdown report,
+source links, and replacement notes. Hatchet schedules runs; the runtime saves
+validated notes and prevents overlapping notebook runs. See the
+[preset guide](docs/presets.md) for the roles and tool configuration.
+
+## Select the bundled PR review
+
+The runtime owns the review agents and graph. When adopting the runtime, config
+selects the pack and supplies deployment settings. It does not copy prompts:
+
+```yaml
+# workflows/review-change.yaml
+use: pr-review
+```
+
+`workflows init pr-review review-change` creates that selector. The pack runs
+independent general, adversarial, security, and dependency investigations, then
+verification, triage, and writeup. Model, profile, and tool overrides are ordinary
+`agents/pr-security/agent.yaml` settings; no `instructions.md` is required.
 
 ## Author a workflow
 
@@ -23,7 +88,7 @@ steps:
     input: input
   verify:
     agent: verify
-    input: [review, adversarial]
+    input: [input, review, adversarial]
 output: verify
 ```
 
@@ -48,6 +113,7 @@ bin/agent-runtime run review-change --input examples/input.json
 
 The CLI enqueues the configured workflow and returns its Hatchet run ID. The result
 task returns the selected output value and its immutable message reference.
+`--wait` retrieves the result; `--text` prints a report or JSON string as text.
 
 Read [setup and ownership](docs/agent-automations.md),
 [defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).

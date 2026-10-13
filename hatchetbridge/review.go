@@ -116,7 +116,7 @@ func RegisterReview(client *hatchet.Client, config githubreview.Integration, rel
 		defer stopGuard()
 		ctx.SetContext(guarded)
 		defer ctx.SetContext(original)
-		childResult, err := runReviewChild(ctx, client, child, ConfiguredInput{Digest: plan.Digest, Input: input}, ReviewLabels(config))
+		childResult, err := runChildWorkflow(ctx, client, child, ConfiguredInput{Digest: plan.Digest, Input: input}, ReviewLabels(config))
 		if err != nil {
 			return result, err
 		}

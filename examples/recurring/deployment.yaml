@@ -1,0 +1,17 @@
+version: 1
+defaults:
+  model: {provider: openai, id: gpt-5}
+  execution: {profile: web, timeout_seconds: 900}
+profiles:
+  web:
+    pool: agent-pool
+    namespace: agents
+    directory: /workspace
+    secret_files:
+      openai: /secrets/openai-key
+    mcp: [web]
+mcp_servers:
+  # Placeholder: replace with an available general search/browser MCP service.
+  web:
+    url: https://web-tools.example.invalid/mcp
+    tools: [search, browse]

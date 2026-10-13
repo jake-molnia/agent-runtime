@@ -1,14 +1,18 @@
 package hatchetbridge
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 	"github.com/jake-molnia/agent-runtime/agentexec"
 	"github.com/jake-molnia/agent-runtime/messages"
+	"github.com/jake-molnia/agent-runtime/notebooks"
 	"github.com/jake-molnia/agent-runtime/workflows"
 )
 
@@ -23,9 +27,10 @@ type ConfiguredState struct {
 }
 
 type ConfiguredResult struct {
-	Digest  string             `json:"digest"`
-	Message messages.Reference `json:"message"`
-	Value   json.RawMessage    `json:"value,omitempty"`
+	Digest           string             `json:"digest"`
+	Message          messages.Reference `json:"message"`
+	Value            json.RawMessage    `json:"value,omitempty"`
+	NotebookRevision uint64             `json:"notebook_revision,omitempty"`
 }
 
 func configuredService(plan workflows.Snapshot, executor *agentexec.Executor, store messages.Store) (*messages.Service, error) {
@@ -47,18 +52,43 @@ func configuredService(plan workflows.Snapshot, executor *agentexec.Executor, st
 			return nil, err
 		}
 		seen[actor] = true
+		if plan.Workflow.Notebook {
+			validateAgent := validator
+			validator = func(value json.RawMessage) error {
+				if err := validateAgent(value); err != nil {
+					return err
+				}
+				return notebooks.ValidateOutput(value)
+			}
+		}
 		validators[snapshot.Agent.Digest] = validator
 		stages = append(stages, stage)
 	}
 	return messages.New(store, validators, stages, 0)
 }
 
-func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot, hooks ...ConfiguredHooks) (*hatchet.Workflow, error) {
+type ConfiguredOptions struct {
+	NotebookStore notebooks.Directory
+	Hooks         []ConfiguredHooks
+}
+
+func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backend, store messages.Store, root string, current workflows.Snapshot, settings ...ConfiguredOptions) (*hatchet.Workflow, error) {
 	if client == nil || store == nil || root == "" {
 		return nil, errors.New("configured workflow dependencies required")
 	}
 	if err := current.Verify(); err != nil {
 		return nil, err
+	}
+	if len(settings) > 1 {
+		return nil, errors.New("only one configured workflow options value is supported")
+	}
+	var configuration ConfiguredOptions
+	if len(settings) == 1 {
+		configuration = settings[0]
+	}
+	notebookStore, hooks := configuration.NotebookStore, configuration.Hooks
+	if current.Workflow.Notebook && notebookStore.Root == "" {
+		return nil, errors.New("notebook workflows require durable notebook storage")
 	}
 	executor, err := agentexec.New(backend)
 	if err != nil {
@@ -85,7 +115,12 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		}
 		return plan, nil
 	}
-	workflow := client.NewWorkflow(ConfiguredWorkflowName(name, current.Digest), hatchet.WithWorkflowVersion(current.Digest))
+	options := []hatchet.WorkflowOption{hatchet.WithWorkflowVersion(current.Digest)}
+	if current.Workflow.Notebook {
+		limit, strategy := int32(1), hatchet.CancelNewest
+		options = append(options, hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: `"` + name + `"`, MaxRuns: &limit, LimitStrategy: &strategy, Name: fmt.Sprintf("notebook-%x", sha256.Sum256([]byte(notebookStore.Root+"\x00"+name))), IsTenantScoped: true}))
+	}
+	workflow := client.NewWorkflow(ConfiguredWorkflowName(name, current.Digest), options...)
 	resolve := workflow.NewTask("resolve", func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
 		plan, err := load(input.Digest)
 		if err != nil {
@@ -94,11 +129,32 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		if !json.Valid(input.Input) || len(input.Input) > workflows.MaxInputBytes {
 			return ConfiguredState{}, errors.New("bounded JSON workflow input required")
 		}
+		value := input.Input
+		if plan.Workflow.Notebook {
+			if notebookStore.Root == "" {
+				return ConfiguredState{}, errors.New("pinned workflow requires notebook storage")
+			}
+			session, err := notebookStore.Begin(ctx.GetContext(), name, ctx.WorkflowRunId(), plan.Digest, value)
+			if err != nil {
+				return ConfiguredState{}, err
+			}
+			var envelope bytes.Buffer
+			encoder := json.NewEncoder(&envelope)
+			encoder.SetEscapeHTML(false)
+			err = encoder.Encode(struct {
+				Task     json.RawMessage `json:"task"`
+				Notebook string          `json:"notebook"`
+			}{session.Input, session.Notebook})
+			value = bytes.TrimSuffix(envelope.Bytes(), []byte("\n"))
+			if err != nil || len(value) > workflows.MaxInputBytes {
+				return ConfiguredState{}, errors.New("task and notebook exceed workflow input limit")
+			}
+		}
 		service, err := configuredService(plan, executor, store)
 		if err != nil {
 			return ConfiguredState{}, err
 		}
-		ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: input.Input}}})
+		ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
 		return ConfiguredState{Digest: input.Digest, Input: ref}, err
 	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
 	tasks := map[string]*hatchet.Task{}
@@ -163,13 +219,23 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			if err != nil {
 				return ConfiguredResult{}, err
 			}
+			hookInput := initialValue
+			if plan.Workflow.Notebook {
+				var envelope struct {
+					Task json.RawMessage `json:"task"`
+				}
+				if err := json.Unmarshal(initialValue, &envelope); err != nil {
+					return ConfiguredResult{}, err
+				}
+				hookInput = envelope.Task
+			}
 			stepContext := ctx.GetContext()
 			for _, hook := range hooks {
 				if hook.BeforeStep == nil {
 					continue
 				}
 				var finish func()
-				stepContext, finish, err = hook.BeforeStep(stepContext, ConfiguredStep{Workflow: name, Step: id, RunID: ctx.WorkflowRunId(), Initial: append(json.RawMessage(nil), initialValue...)})
+				stepContext, finish, err = hook.BeforeStep(stepContext, ConfiguredStep{Workflow: name, Step: id, RunID: ctx.WorkflowRunId(), Initial: append(json.RawMessage(nil), hookInput...)})
 				if err != nil {
 					return ConfiguredResult{}, err
 				}
@@ -208,6 +274,11 @@ func RegisterConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			return result, err
 		}
 		result.Value, err = configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), name, state, plan, plan.Workflow.Output, result.Message)
+		if err == nil && plan.Workflow.Notebook {
+			var record notebooks.Record
+			record, err = notebookStore.Commit(ctx.GetContext(), name, ctx.WorkflowRunId(), plan.Digest, result.Value)
+			result.NotebookRevision = record.Revision
+		}
 		return result, err
 	}, hatchet.WithParents(resolve, tasks[current.Workflow.Output]), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
 	return workflow, nil

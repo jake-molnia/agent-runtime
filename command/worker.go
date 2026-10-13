@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/hatchetbridge"
 	"github.com/jake-molnia/agent-runtime/messages"
+	"github.com/jake-molnia/agent-runtime/notebooks"
 	"github.com/jake-molnia/agent-runtime/orchestration"
 	"github.com/jake-molnia/agent-runtime/sandbox"
 	"github.com/jake-molnia/agent-runtime/tailnet"
@@ -40,6 +42,10 @@ func worker(ctx context.Context) error {
 	}
 	if len(plans) == 0 {
 		return errors.New("no workflows configured in workflows/; the worker has no baked-in workflows")
+	}
+	notes, err := configuredNotebooks(plans)
+	if err != nil {
+		return err
 	}
 	for _, plan := range plans {
 		if err := workflows.Save(snapshots, plan); err != nil {
@@ -134,11 +140,15 @@ func worker(ctx context.Context) error {
 			}
 			backend = reviewCheckoutBackend{Backend: engine, tokens: tokens}
 		}
-		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, backend, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan, hooks...)
+		workflow, err := hatchetbridge.RegisterConfiguredWorkflow(client, backend, messages.Directory{Root: env("AGENT_MESSAGE_DIR", "/state/messages")}, snapshots, plan, hatchetbridge.ConfiguredOptions{Hooks: hooks, NotebookStore: notes})
 		if err != nil {
 			return err
 		}
-		registered = append(registered, workflow)
+		schedule, err := hatchetbridge.RegisterConfiguredSchedule(client, workflow, plan)
+		if err != nil {
+			return err
+		}
+		registered = append(registered, workflow, schedule)
 		if reviewsEnabled && plan.Workflow.Name == reviewConfig.Workflow {
 			reviewChild = workflow
 		}
@@ -212,6 +222,22 @@ func worker(ctx context.Context) error {
 	g.Go(func() error { return httpServer(ctx, ":9091", mux) })
 	g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
 	return g.Wait()
+}
+
+func configuredNotebooks(plans map[string]workflows.Snapshot) (notebooks.Directory, error) {
+	deployment := os.Getenv("AGENT_DEPLOYMENT_ID")
+	for _, plan := range plans {
+		if plan.Workflow.Notebook && !workflowName.MatchString(deployment) {
+			return notebooks.Directory{}, errors.New("notebook workflows require a stable AGENT_DEPLOYMENT_ID of 1-63 letters, digits, dashes or underscores")
+		}
+	}
+	if deployment == "" {
+		return notebooks.Directory{}, nil
+	}
+	if !workflowName.MatchString(deployment) {
+		return notebooks.Directory{}, errors.New("invalid AGENT_DEPLOYMENT_ID for notebook storage")
+	}
+	return notebooks.Directory{Root: filepath.Join(env("AGENT_NOTEBOOK_DIR", "/state/notebooks"), deployment)}, nil
 }
 
 // Never pass a partial inventory to the destructive device reaper.
