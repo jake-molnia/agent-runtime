@@ -231,7 +231,7 @@ func TestReviewPinsResolutionThroughConfiguredGraph(t *testing.T) {
 			}
 			reduced := run("reduce").(ReviewResult)
 			if scenario != "skip" {
-				configuredTestJSON(t, reduced.Output, json.RawMessage(`{"summary":"Review complete","findings":[{"path":"a.go","line":1,"body":"[P2] Fix\n\nThis breaks the caller."}]}`))
+				configuredTestJSON(t, reduced.Output, json.RawMessage(`{"summary":"Review complete","findings":[{"path":"a.go","line":1,"body":"**[P2] Fix**\n\nThis breaks the caller."}]}`))
 			}
 			outcome := run("publish").(githubreview.Outcome)
 			want, calls, publications := "dry-run", 3, 0

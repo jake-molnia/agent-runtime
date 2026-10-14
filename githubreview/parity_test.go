@@ -129,13 +129,29 @@ func TestMaximumUnicodeCandidateWriteup(t *testing.T) {
 	title := strings.Repeat("😀", 200)
 	explanation := strings.Repeat("😀", 1800)
 	report, _ := json.Marshal(CandidateReview{Summary: "summary", Limitations: "none", Findings: []Candidate{{Priority: "P1", Path: "unchanged.go", Line: 3, Title: title, Explanation: explanation}}})
-	wording, _ := json.Marshal(Writeup{Assessment: "summary", Findings: []FindingWording{{Sources: []int{0}, Title: title, Explanation: explanation}}})
+	wording, _ := json.Marshal(Writeup{Assessment: "summary", Findings: []FindingWording{{Sources: []int{0}, Title: title, Explanation: explanation, Details: explanation}}})
 	output, err := Reduce([]json.RawMessage{report}, wording)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = ValidateResolvedOutput(resolved, output); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublicationPermalinksUsePinnedHead(t *testing.T) {
+	input, _ := fixture()
+	path := "src/a [b](c).go"
+	requests := reviewRequests(input, "key", "summary", []Finding{{Path: path, Line: 3, Body: "Issue"}, {Path: "other.go", Line: 7, Body: "Other issue"}}, map[string]map[int]bool{path: {3: true}})
+	if len(requests) != 1 || len(requests[0].Comments) != 1 {
+		t.Fatalf("unexpected placement: %+v", requests)
+	}
+	link := "https://github.com/" + input.Repository + "/blob/" + input.HeadSHA + "/src/a%20%5Bb%5D%28c%29.go#L3"
+	if !strings.HasSuffix(requests[0].Comments[0].Body, "[View source at reviewed commit]("+link+")") {
+		t.Fatalf("invalid inline permalink: %s", requests[0].Comments[0].Body)
+	}
+	if !strings.Contains(requests[0].Body, "/blob/"+input.HeadSHA+"/other.go#L7") {
+		t.Fatal("off-diff finding lost its pinned permalink")
 	}
 }
 

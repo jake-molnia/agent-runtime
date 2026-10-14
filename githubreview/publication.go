@@ -64,15 +64,16 @@ func reviewRequests(input Input, key, summary string, findings []Finding, lines 
 	appendText(summary)
 	comments := []ReviewComment{}
 	for _, finding := range findings {
-		if lines[finding.Path][finding.Line] {
-			comments = append(comments, ReviewComment{Path: finding.Path, Line: finding.Line, Side: "RIGHT", Body: finding.Body})
-			continue
-		}
 		segments := strings.Split(finding.Path, "/")
 		for i := range segments {
 			segments[i] = url.PathEscape(segments[i])
 		}
 		link := fmt.Sprintf("https://github.com/%s/blob/%s/%s#L%d", input.Repository, input.HeadSHA, strings.Join(segments, "/"), finding.Line)
+		if lines[finding.Path][finding.Line] {
+			body := finding.Body + "\n\n[View source at reviewed commit](" + link + ")"
+			comments = append(comments, ReviewComment{Path: finding.Path, Line: finding.Line, Side: "RIGHT", Body: body})
+			continue
+		}
 		label := strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;").Replace(finding.Path)
 		section := fmt.Sprintf("\n\n### [%s:%d](%s)\n\n%s", label, finding.Line, link, finding.Body)
 		if len(bodies[len(bodies)-1])+len(section) > limit {

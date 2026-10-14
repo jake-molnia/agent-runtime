@@ -41,6 +41,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1800
+          },
+          "details": {
+            "type": "string",
+            "maxLength": 1800
           }
         }
       }
