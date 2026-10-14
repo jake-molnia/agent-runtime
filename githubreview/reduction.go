@@ -122,7 +122,7 @@ func Reduce(reports []json.RawMessage, raw json.RawMessage) (json.RawMessage, er
 		title = strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]").Replace(title)
 		body := fmt.Sprintf("**[%s] %s**\n\n%s", f.Priority, title, f.Explanation)
 		if f.details != "" {
-			body += "\n\n<details>\n<summary>Details</summary>\n\n" + f.details + "\n\n</details>"
+			body += "\n\n<details>\n<summary>Details</summary>\n\n" + disclosureMarkdown(f.details) + "\n\n</details>"
 		}
 		output.Findings = append(output.Findings, Finding{Path: f.Path, Line: f.Line, Body: body})
 	}
