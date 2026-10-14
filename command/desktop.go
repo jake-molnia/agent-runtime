@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -54,6 +55,12 @@ func desktopHandler(ctx context.Context, ready <-chan struct{}, next http.Handle
 // runDesktop owns one display, browser profile, and tool suite for the sandbox's lifetime.
 // Its home is separate from both the checkout and OpenCode's credential directory.
 func runDesktop(ctx context.Context, root string, onReady func([]string)) (err error) {
+	return runDesktopWithEnvironment(ctx, root, nil, onReady)
+}
+
+// onEnvironment exposes the display and session bus before the desktop tool suite is ready.
+func runDesktopWithEnvironment(ctx context.Context, root string, onEnvironment, onReady func([]string)) (err error) {
+	started := time.Now()
 	chromiumSandbox := env("SANDBOX_CHROMIUM_SANDBOX", "enabled")
 	if chromiumSandbox != "enabled" && chromiumSandbox != "disabled" {
 		return errors.New("SANDBOX_CHROMIUM_SANDBOX must be enabled or disabled")
@@ -129,6 +136,10 @@ func runDesktop(ctx context.Context, root string, onReady func([]string)) (err e
 	}
 	if err := waitDesktop(lifetime, "session bus", probeCommand("dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.DBus", "/", "org.freedesktop.DBus.ListNames")); err != nil {
 		return err
+	}
+	slog.Info("sandbox startup", "stage", "display-ready", "elapsed_ms", time.Since(started).Milliseconds())
+	if onEnvironment != nil {
+		onEnvironment(env)
 	}
 	start("xfce4-session")
 	if err := waitDesktop(lifetime, "window manager", probeCommand("wmctrl", "-m")); err != nil {
@@ -210,7 +221,10 @@ func runDesktop(ctx context.Context, root string, onReady func([]string)) (err e
 	}); err != nil {
 		return err
 	}
-	onReady(env)
+	slog.Info("sandbox startup", "stage", "desktop-ready", "elapsed_ms", time.Since(started).Milliseconds())
+	if onReady != nil {
+		onReady(env)
+	}
 	<-lifetime.Done()
 	return lifetime.Err()
 }
@@ -233,6 +247,7 @@ func desktopEnv(root, state string) []string {
 }
 
 func waitDesktop(ctx context.Context, name string, probe func(context.Context) error) error {
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	for {
@@ -240,6 +255,7 @@ func waitDesktop(ctx context.Context, name string, probe func(context.Context) e
 		err := probe(attempt)
 		stop()
 		if err == nil {
+			slog.Info("sandbox readiness", "service", name, "elapsed_ms", time.Since(started).Milliseconds())
 			return nil
 		}
 		select {

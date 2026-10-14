@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -39,22 +38,16 @@ func TestT3SessionEnvironmentKeepsIdentityAndSharesDesktop(t *testing.T) {
 	}
 }
 
-func TestT3ExecutionWorkerWaitsForIDE(t *testing.T) {
+func TestT3ExecutionWorkerStartsBeforeIDEHealth(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:8085")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ready atomic.Bool
 	var once sync.Once
 	probed := make(chan struct{})
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() { close(probed) })
-		if !ready.Load() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"alive"}`))
+		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	server.Listener.Close()
 	server.Listener = listener
@@ -88,10 +81,6 @@ func TestT3ExecutionWorkerWaitsForIDE(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("IDE was not probed")
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("execution worker started before IDE readiness")
-	}
-	ready.Store(true)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if data, err := os.ReadFile(marker); err == nil {
@@ -108,4 +97,100 @@ func TestT3ExecutionWorkerWaitsForIDE(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("execution worker did not start with the desktop environment")
+}
+
+func TestT3CoreStartsBeforeDesktopAndStopsOnAuxiliaryExit(t *testing.T) {
+	for _, failedService := range []string{"desktop", "ide"} {
+		t.Run(failedService, func(t *testing.T) {
+			root := t.TempDir()
+			config := filepath.Join(root, "config")
+			if err := os.Mkdir(config, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for binary, script := range map[string]string{
+				"xauth":         "exit 0",
+				"xdpyinfo":      "exit 0",
+				"dbus-send":     "exit 0",
+				"dbus-daemon":   "exec sleep 60",
+				"Xtigervnc":     "exec sleep 60",
+				"xfce4-session": "echo $$ > \"$SANDBOX_ROOT/desktop-pid\"; exec sleep 60",
+				"wmctrl":        "exit 1",
+				"ide":           "exec sleep 60",
+				"worker":        "echo \"$$ $T3_IDE_PID\" > \"$T3_WORKSPACE_ROOT/worker-pids\"; exec sleep 60",
+			} {
+				if err := os.WriteFile(filepath.Join(root, binary), []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", root+":"+os.Getenv("PATH"))
+			t.Setenv("SANDBOX_DESKTOP_CONFIG", config)
+			t.Setenv("T3_WORKSPACE_ROOT", root)
+			t.Setenv("T3_WORKER_STATE_DIR", filepath.Join(root, "state"))
+			t.Setenv("T3_IDE_BINARY", filepath.Join(root, "ide"))
+			t.Setenv("T3_WORKER_NODE", filepath.Join(root, "worker"))
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			var sessionErr error
+			go func() {
+				defer close(done)
+				sessionErr = t3Session(ctx)
+			}()
+			defer func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(7 * time.Second):
+					t.Error("session did not stop its children")
+				}
+			}()
+			readPIDs := func(name string, count int) []int {
+				t.Helper()
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					data, _ := os.ReadFile(filepath.Join(root, name))
+					fields := strings.Fields(string(data))
+					if len(fields) == count {
+						pids := make([]int, count)
+						for i, value := range fields {
+							pid, err := strconv.Atoi(value)
+							if err != nil || pid <= 0 {
+								t.Fatalf("invalid child PID: %q", value)
+							}
+							pids[i] = pid
+						}
+						return pids
+					}
+					select {
+					case <-done:
+						t.Fatalf("session exited before %s: %v", name, sessionErr)
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+				t.Fatalf("%s never started while desktop and IDE were unready", name)
+				return nil
+			}
+			pids := readPIDs("worker-pids", 2)
+			desktopPID := readPIDs("desktop-pid", 1)[0]
+			failedPID, binary := desktopPID, "xfce4-session"
+			if failedService == "ide" {
+				failedPID, binary = pids[1], "ide"
+			}
+			if err := syscall.Kill(failedPID, syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(7 * time.Second):
+				t.Fatal("auxiliary exit did not stop the session")
+			}
+			if sessionErr == nil || !strings.Contains(sessionErr.Error(), binary) {
+				t.Fatalf("auxiliary failure was lost: %v", sessionErr)
+			}
+			for _, pid := range append(pids, desktopPID) {
+				if syscall.Kill(pid, 0) == nil {
+					t.Errorf("session left child %d running", pid)
+				}
+			}
+		})
+	}
 }

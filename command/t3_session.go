@@ -4,16 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
 
-// t3Session starts the execution worker only after its desktop and IDE are ready.
+// t3Session starts execution with the display while desktop tools finish initializing.
 // The worker owns authenticated routing; these services remain on pod loopback.
 func t3Session(ctx context.Context) error {
 	root := env("T3_WORKSPACE_ROOT", "/workspace")
@@ -29,13 +31,13 @@ func t3Session(ctx context.Context) error {
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g, lifetime := errgroup.WithContext(lifetime)
-	desktopReady := make(chan []string, 1)
+	displayReady := make(chan []string, 1)
 	g.Go(func() error {
-		return runDesktop(lifetime, root, func(environment []string) { desktopReady <- environment })
+		return runDesktopWithEnvironment(lifetime, root, func(environment []string) { displayReady <- environment }, nil)
 	})
 	g.Go(func() error {
 		select {
-		case desktop := <-desktopReady:
+		case desktop := <-displayReady:
 			return runT3SessionTools(lifetime, root, state, desktop)
 		case <-lifetime.Done():
 			return lifetime.Err()
@@ -45,6 +47,7 @@ func t3Session(ctx context.Context) error {
 }
 
 func runT3SessionTools(ctx context.Context, root, state string, desktop []string) error {
+	started := time.Now()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g, lifetime := errgroup.WithContext(ctx)
@@ -55,7 +58,12 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 	ide.Dir = root
 	ide.Env = t3IDEEnvironment(os.Environ(), desktop)
 	ideStarted := make(chan int, 1)
-	g.Go(func() error { return runChildStarted(lifetime, ide, func(pid int) { ideStarted <- pid }) })
+	g.Go(func() error {
+		return runChildStarted(lifetime, ide, func(pid int) {
+			slog.Info("sandbox startup", "stage", "ide-started", "elapsed_ms", time.Since(started).Milliseconds())
+			ideStarted <- pid
+		})
+	})
 	g.Go(func() error {
 		var idePID int
 		select {
@@ -63,7 +71,15 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 		case <-lifetime.Done():
 			return lifetime.Err()
 		}
-		if err := waitDesktop(lifetime, "VS Code", func(ctx context.Context) error {
+		worker := exec.Command(env("T3_WORKER_NODE", "node"), env("T3_WORKER_ENTRYPOINT", "/opt/t3/dist/execution-worker.mjs"))
+		worker.Dir = root
+		worker.Env = replaceEnvironment(t3WorkerEnvironment(os.Environ(), desktop), "T3_IDE_PID="+strconv.Itoa(idePID))
+		return runChildStarted(lifetime, worker, func(int) {
+			slog.Info("sandbox startup", "stage", "worker-started", "elapsed_ms", time.Since(started).Milliseconds())
+		})
+	})
+	g.Go(func() error {
+		return waitDesktop(lifetime, "VS Code", func(ctx context.Context) error {
 			var health struct {
 				Status string `json:"status"`
 			}
@@ -74,13 +90,7 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 				return fmt.Errorf("unexpected IDE health status %q", health.Status)
 			}
 			return nil
-		}); err != nil {
-			return err
-		}
-		worker := exec.Command(env("T3_WORKER_NODE", "node"), env("T3_WORKER_ENTRYPOINT", "/opt/t3/dist/execution-worker.mjs"))
-		worker.Dir = root
-		worker.Env = replaceEnvironment(t3WorkerEnvironment(os.Environ(), desktop), "T3_IDE_PID="+strconv.Itoa(idePID))
-		return runChild(lifetime, worker)
+		})
 	})
 	return g.Wait()
 }
