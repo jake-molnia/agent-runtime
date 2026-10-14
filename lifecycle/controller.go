@@ -8,7 +8,7 @@ import (
 	"github.com/jake-molnia/agent-runtime/sandbox"
 )
 
-// Execute runs under Hatchet's shared per-workspace concurrency limit. Every
+// Execute runs under the runner's Kubernetes workspace lease. Every
 // external mutation also carries resource identity/version checks for retry safety.
 func (c *Controller) Execute(ctx context.Context, r Request) (State, error) {
 	if err := r.Validate(); err != nil {

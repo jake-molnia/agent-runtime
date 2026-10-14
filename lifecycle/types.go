@@ -83,6 +83,8 @@ type State struct {
 	Endpoint           string                   `json:"endpoint,omitempty"`
 	TaskID             string                   `json:"taskId,omitempty"`
 	CompletedOperation string                   `json:"completedOperation,omitempty"`
+	PoolID             *string                  `json:"poolId,omitempty"`
+	Operation          *Operation               `json:"operation,omitempty"`
 }
 type Access struct {
 	State State  `json:"state"`
