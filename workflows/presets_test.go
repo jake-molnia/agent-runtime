@@ -1,6 +1,7 @@
 package workflows_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,9 +9,58 @@ import (
 	"testing"
 
 	"github.com/jake-molnia/agent-runtime/definitions"
+	"github.com/jake-molnia/agent-runtime/githubreview"
 	"github.com/jake-molnia/agent-runtime/packs"
 	"github.com/jake-molnia/agent-runtime/workflows"
 )
+
+func TestGitHubExamplePublishesOnlyVerifiedPackFindings(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", "examples", "github-review"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := definitions.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := workflows.Load(root, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := githubreview.LoadIntegration(filepath.Join(root, "integrations", "github-review.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := plans[config.Workflow]
+	if !reflect.DeepEqual(config.CandidateSteps, []string{"verify"}) || config.WriteupStep != "writeup" {
+		t.Fatal("example bypasses the final verifier")
+	}
+	if !reflect.DeepEqual(plan.Workflow.Steps["verify"].Input.Sources, []string{"input", "review", "adversarial", "security", "dependencies"}) {
+		t.Fatal("example omitted a specialist from verification")
+	}
+	for step, snapshot := range plan.Agents {
+		builtin, ok := definitions.Builtin(snapshot.Agent.Name)
+		schema, err := json.Marshal(builtin.Schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || snapshot.Agent.Instructions != builtin.Instructions || string(snapshot.Agent.Schema) != string(schema) {
+			t.Fatalf("%s no longer inherits the bundled review contract", step)
+		}
+		if step == "triage" || step == "writeup" {
+			if len(snapshot.Agent.MCP) != 0 {
+				t.Fatalf("%s unexpectedly grants MCP access", step)
+			}
+		} else if !reflect.DeepEqual(snapshot.Agent.MCP, []string{"aperture"}) {
+			t.Fatalf("%s lost its investigation tools", step)
+		}
+	}
+	for _, policy := range config.Repositories {
+		if policy.Publish {
+			t.Fatal("example must remain a dry run")
+		}
+	}
+}
 
 func presetRoot(t *testing.T) string {
 	t.Helper()

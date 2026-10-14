@@ -6,9 +6,11 @@ workers do not require a GitHub App or database. The integration activates when
 `integrations/github-review.yaml` exists under `AGENT_DEFINITIONS_DIR`, or when
 `AGENT_GITHUB_REVIEW_CONFIG` points to a file.
 
-The [complete example](../examples/github-review) includes a review/verify/
-adversarial/writeup graph, output schemas, Aperture profiles, and a dry-run request.
-Copy and customize these files in your config repo. The example repository and
+The [complete example](../examples/github-review) selects the bundled `pr-review`
+pack and includes model overrides, Aperture profiles, and a dry-run request.
+Four independent specialists feed one verifier, followed by triage and writeup.
+Copy the deployment settings and pack selector into your config repo; the runtime
+owns the graph, role instructions, and output schemas. The example repository and
 installation IDs are placeholders, and publication is disabled.
 
 ## Select the graph and repository policy
@@ -17,7 +19,7 @@ installation IDs are placeholders, and publication is disabled.
 version: 1
 name: example-pr-review
 workflow: review-agents
-candidate_steps: [verify, adversarial]
+candidate_steps: [verify]
 writeup_step: writeup
 actions: [opened, synchronize, reopened, ready_for_review]
 native_events: false
@@ -33,11 +35,18 @@ repositories:
 step IDs in concatenation order. Each returns `summary`, `findings`, and
 `limitations`. Findings carry `priority`, `path`, `line`, `title`, and `explanation`.
 `writeup_step` returns `assessment` and finding groups with `sources`, `title`,
-and `explanation`. The schemas in the example define the bounds.
+and `explanation`, plus optional `details` for supporting Markdown. The bundled
+[writeup schema](../definitions/schemas/review-writeup.schema.json) defines the bounds.
+With `pr-review`, select only `verify` as the candidate step. Adding a specialist
+there would make its unverified findings eligible for publication.
 
 The writer must cover every source index exactly once. Trusted code reads the
 actual candidate step messages, verifies their workflow/agent/reply identities,
 and retains the first source's location and highest priority in each group.
+Comments have a bold priority/title, a concise impact paragraph, optional collapsed
+details, and a permalink at the reviewed head. The writer supplies prose; trusted
+code supplies the layout and source permalink. Details are supporting context from
+the verified report, not an independently attested execution record.
 It posts findings on context or added lines inline. Other locations, missing
 patches, and truncated patches become links in the review body. Large review
 bodies are split into persisted, individually reconciled parts. Candidate arrays
@@ -49,6 +58,12 @@ publication in one Hatchet DAG. Only running agent stages occupy durable worker
 slots; parent tasks do not hold slots while waiting for child workflows. Original
 workflow names remain the CLI interface. Every scheduler task action includes
 the integration and graph revision identity.
+
+Review completes after publication. A separate babysit workflow can consume the
+GitHub review and dispatch a dedicated fix workflow. Review itself does not edit
+or push a correction. Independent security publication needs its own completion
+identity before it can share a PR head with this integration; see the
+[review and security design](github-review-design.md).
 
 ## Mount integration credentials
 
