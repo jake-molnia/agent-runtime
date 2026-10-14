@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -25,6 +26,7 @@ type FindingWording struct {
 	Sources     []int  `json:"sources"`
 	Title       string `json:"title"`
 	Explanation string `json:"explanation"`
+	Details     string `json:"details,omitempty"`
 }
 type Writeup struct {
 	Assessment string           `json:"assessment"`
@@ -71,9 +73,13 @@ func Reduce(reports []json.RawMessage, raw json.RawMessage) (json.RawMessage, er
 		return nil, errors.New("invalid writeup")
 	}
 	seen := make([]bool, len(candidates))
-	merged := []Candidate{}
+	type writtenCandidate struct {
+		Candidate
+		details string
+	}
+	merged := []writtenCandidate{}
 	for _, f := range wording.Findings {
-		if len(f.Sources) == 0 || !boundedText(f.Title, 200) || !boundedText(f.Explanation, 1800) {
+		if len(f.Sources) == 0 || !boundedText(f.Title, 200) || !boundedText(f.Explanation, 1800) || (f.Details != "" && !boundedText(f.Details, 1800)) {
 			return nil, errors.New("invalid finding wording")
 		}
 		var selected Candidate
@@ -90,7 +96,7 @@ func Reduce(reports []json.RawMessage, raw json.RawMessage) (json.RawMessage, er
 		}
 		selected.Title = f.Title
 		selected.Explanation = f.Explanation
-		merged = append(merged, selected)
+		merged = append(merged, writtenCandidate{selected, f.Details})
 	}
 	for _, covered := range seen {
 		if !covered {
@@ -112,7 +118,13 @@ func Reduce(reports []json.RawMessage, raw json.RawMessage) (json.RawMessage, er
 		Findings []Finding `json:"findings"`
 	}{Summary: wording.Assessment, Findings: []Finding{}}
 	for _, f := range merged {
-		output.Findings = append(output.Findings, Finding{Path: f.Path, Line: f.Line, Body: fmt.Sprintf("[%s] %s\n\n%s", f.Priority, f.Title, f.Explanation)})
+		title := html.EscapeString(strings.Join(strings.Fields(f.Title), " "))
+		title = strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]").Replace(title)
+		body := fmt.Sprintf("**[%s] %s**\n\n%s", f.Priority, title, f.Explanation)
+		if f.details != "" {
+			body += "\n\n<details>\n<summary>Details</summary>\n\n" + f.details + "\n\n</details>"
+		}
+		output.Findings = append(output.Findings, Finding{Path: f.Path, Line: f.Line, Body: body})
 	}
 	return json.Marshal(output)
 }

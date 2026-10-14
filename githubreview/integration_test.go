@@ -80,3 +80,29 @@ func TestReduceSourceIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFindingPresentation(t *testing.T) {
+	report := json.RawMessage(`{"summary":"Verified","limitations":"","findings":[{"priority":"P2","path":"a.go","line":3,"title":"Issue","explanation":"Evidence"}]}`)
+	for _, details := range []string{"", "The focused check returned `unexpected user`."} {
+		wording, _ := json.Marshal(Writeup{Assessment: "Requires correction", Findings: []FindingWording{{Sources: []int{0}, Title: "Escape *markup*\n<script>", Explanation: "A different user's data is returned.", Details: details}}})
+		output, err := Reduce([]json.RawMessage{report}, wording)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, findings, err := validateOutput(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := findings[0].Body
+		if !strings.HasPrefix(body, "**[P2] Escape \\*markup\\* &lt;script&gt;**\n\nA different user's data is returned.") {
+			t.Fatalf("title or explanation rendered incorrectly: %s", body)
+		}
+		if strings.Contains(body, "<details>") != (details != "") || (details != "" && !strings.Contains(body, "<summary>Details</summary>\n\n"+details+"\n\n</details>")) {
+			t.Fatalf("optional details rendered incorrectly: %s", body)
+		}
+	}
+	wording, _ := json.Marshal(Writeup{Assessment: "Requires correction", Findings: []FindingWording{{Sources: []int{0}, Title: "Issue", Explanation: "Evidence", Details: strings.Repeat("x", 1801)}}})
+	if _, err := Reduce([]json.RawMessage{report}, wording); err == nil {
+		t.Fatal("oversized details accepted")
+	}
+}

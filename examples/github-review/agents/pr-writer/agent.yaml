@@ -1,0 +1,3 @@
+version: 1
+model: {provider: aperture, id: gpt-6-luna}
+mcp: []
