@@ -42,6 +42,10 @@ func (c *Controller) MigrateProfile(ctx context.Context, r ProfileMigration) (St
 	}
 	c.invalidateGateway(r.FromProfile, r.WorkspaceID)
 	defer c.invalidateGateway(r.FromProfile, r.WorkspaceID)
+	if s.Request.Profile != r.ToProfile {
+		s.TaskID = ""
+		s.Operation = nil
+	}
 	s.Request.Profile = r.ToProfile
 	s.ProfileHash = digest(to)
 	if err = c.save(ctx, obj, s); err != nil {

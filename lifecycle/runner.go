@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -155,6 +156,13 @@ func (runner *Runner) Run(ctx context.Context) error {
 		cancel  context.CancelFunc
 	}
 	active := make(map[string]running)
+	type deferredWork struct {
+		request string
+		delay   time.Duration
+		after   time.Time
+	}
+	deferred := make(map[string]deferredWork)
+	var discovery deferredWork
 	var queued []Request
 	defer func() {
 		for _, work := range active {
@@ -170,26 +178,52 @@ func (runner *Runner) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case work := <-done:
-			active[work.key].cancel()
+			current := active[work.key]
+			current.cancel()
 			delete(active, work.key)
 			if work.err != nil && ctx.Err() == nil {
-				return work.err
+				retry := deferred[work.key]
+				if retry.request != current.request {
+					retry = deferredWork{request: current.request}
+				}
+				retry.delay = min(max(time.Second, 2*retry.delay), 30*time.Second)
+				retry.after = time.Now().Add(retry.delay)
+				deferred[work.key] = retry
+				slog.Warn("T3 lifecycle transition deferred", "workspace", work.key, "retry_after", retry.delay, "error", work.err)
+			} else {
+				delete(deferred, work.key)
 			}
 		case <-ticker.C:
 			runner.notify()
 		case <-runner.wake:
+			if time.Now().Before(discovery.after) {
+				break
+			}
 			requests, err := runner.pending(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
-				return err
+				discovery.delay = min(max(time.Second, 2*discovery.delay), 30*time.Second)
+				discovery.after = time.Now().Add(discovery.delay)
+				slog.Warn("T3 lifecycle discovery deferred", "retry_after", discovery.delay, "error", err)
+			} else {
+				discovery = deferredWork{}
 			}
 			queued = requests
+			present := make(map[string]string, len(queued))
 			for _, request := range queued {
 				key := runner.controller.Profiles[request.Profile].Namespace + "/" + sandbox.WorkspacePVCName(request.WorkspaceID)
+				present[key] = digest(request)
 				if work, ok := active[key]; ok && work.request != digest(request) {
 					work.cancel()
+				}
+			}
+			if err == nil {
+				for key, retry := range deferred {
+					if present[key] != retry.request {
+						delete(deferred, key)
+					}
 				}
 			}
 		}
@@ -198,6 +232,9 @@ func (runner *Runner) Run(ctx context.Context) error {
 			queued = queued[1:]
 			key := runner.controller.Profiles[request.Profile].Namespace + "/" + sandbox.WorkspacePVCName(request.WorkspaceID)
 			if _, ok := active[key]; ok {
+				continue
+			}
+			if retry, ok := deferred[key]; ok && retry.request == digest(request) && time.Now().Before(retry.after) {
 				continue
 			}
 			workCtx, cancel := context.WithCancel(ctx)
@@ -211,6 +248,7 @@ func (runner *Runner) pending(ctx context.Context) ([]Request, error) {
 	c := runner.controller
 	namespaces := make(map[string]bool)
 	var requests []Request
+	var discoveryErr error
 	for _, profile := range c.Profiles {
 		if namespaces[profile.Namespace] {
 			continue
@@ -218,7 +256,8 @@ func (runner *Runner) pending(ctx context.Context) ([]Request, error) {
 		namespaces[profile.Namespace] = true
 		objects, err := c.Control.API.Resource(sandbox.WorkspacePVCs).Namespace(profile.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=agent-runtime"})
 		if err != nil {
-			return nil, fmt.Errorf("list lifecycle workspaces: %w", err)
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("list lifecycle workspaces in %s: %w", profile.Namespace, err))
+			continue
 		}
 		for _, obj := range objects.Items {
 			var s State
@@ -235,7 +274,7 @@ func (runner *Runner) pending(ctx context.Context) ([]Request, error) {
 			requests = append(requests, s.Request)
 		}
 	}
-	return requests, nil
+	return requests, discoveryErr
 }
 
 func (runner *Runner) execute(ctx context.Context, request Request) error {

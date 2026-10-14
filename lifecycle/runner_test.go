@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -472,4 +473,181 @@ func TestNativeRunnerPoolOwnershipAndLegacyCutover(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireStatus(t, cutover, newID, "COMPLETED")
+}
+
+type workspaceResumeWorker struct {
+	Worker
+	resume func(context.Context, WorkerRequest) error
+}
+
+func (w workspaceResumeWorker) Resume(ctx context.Context, _, _ string, request WorkerRequest) error {
+	return w.resume(ctx, request)
+}
+
+func TestRunnerKeepsOtherTransitionsAliveThroughInfrastructureErrors(t *testing.T) {
+	for _, stage := range []string{"lease", "prepare", "outcome", "discovery"} {
+		t.Run(stage, func(t *testing.T) {
+			healthy := request(2, EnsureRunning)
+			failed := request(1, EnsureRunning)
+			failed.WorkspaceID, failed.OperationID = "central/transient", "transient-operation"
+			healthyComplete, failedComplete := make(chan struct{}), make(chan struct{})
+			var healthyOnce, failedOnce sync.Once
+			c, api, worker := runnerFixture(t, func(s State) {
+				if s.Request.WorkspaceID == healthy.WorkspaceID && s.CompletedOperation == healthy.OperationID {
+					healthyOnce.Do(func() { close(healthyComplete) })
+				}
+				if s.Request.WorkspaceID == failed.WorkspaceID && s.CompletedOperation == failed.OperationID {
+					failedOnce.Do(func() { close(failedComplete) })
+				}
+			})
+			run(t, c, request(1, EnsureRunning))
+			started, releaseHealthy := make(chan struct{}), make(chan struct{})
+			var startedOnce sync.Once
+			c.Worker = workspaceResumeWorker{Worker: worker, resume: func(ctx context.Context, request WorkerRequest) error {
+				if request.Identity.WorkspaceID != healthy.WorkspaceID {
+					return nil
+				}
+				startedOnce.Do(func() { close(started) })
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-releaseHealthy:
+					return nil
+				}
+			}}
+			runner := NewRunner(c)
+			healthyID := submitHTTP(t, c, runner, healthy)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- runner.Run(ctx) }()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("runner did not stop")
+				}
+			})
+			wait := func(event <-chan struct{}, description string) {
+				t.Helper()
+				select {
+				case <-event:
+				case err := <-done:
+					done <- err
+					t.Fatalf("runner stopped while waiting for %s: %v", description, err)
+				case <-time.After(10 * time.Second):
+					t.Fatalf("timed out waiting for %s", description)
+				}
+			}
+			wait(started, "healthy transition")
+			if _, err := c.Admit(context.Background(), failed); err != nil {
+				t.Fatal(err)
+			}
+			injected, rediscovered := make(chan struct{}), make(chan struct{})
+			var injectedOnce, discoveryOnce sync.Once
+			var faulted atomic.Bool
+			api.PrependReactor("*", "*", func(a ktesting.Action) (bool, runtime.Object, error) {
+				if a.GetVerb() == "list" && a.GetResource() == sandbox.WorkspacePVCs && faulted.Load() {
+					discoveryOnce.Do(func() { close(rediscovered) })
+				}
+				if faulted.Load() {
+					return false, nil, nil
+				}
+				fail := false
+				switch stage {
+				case "lease":
+					if a.GetVerb() == "get" && a.GetResource() == transitionLeases {
+						fail = a.(ktesting.GetAction).GetName() == sandbox.WorkspacePVCName(failed.WorkspaceID)
+					}
+				case "prepare":
+					if a.GetVerb() == "get" && a.GetResource() == sandbox.WorkspacePVCs {
+						fail = a.(ktesting.GetAction).GetName() == sandbox.WorkspacePVCName(failed.WorkspaceID)
+					}
+				case "outcome":
+					if a.GetVerb() == "patch" && a.GetResource() == sandbox.WorkspacePVCs {
+						patch := a.(ktesting.PatchAction)
+						var operations []struct{ Op, Path, Value string }
+						if patch.GetName() == sandbox.WorkspacePVCName(failed.WorkspaceID) && json.Unmarshal(patch.GetPatch(), &operations) == nil {
+							for _, op := range operations {
+								var state State
+								if op.Op == "add" && json.Unmarshal([]byte(op.Value), &state) == nil && state.Operation != nil && state.Operation.Status == "COMPLETED" {
+									fail = true
+								}
+							}
+						}
+					}
+				case "discovery":
+					fail = a.GetVerb() == "list" && a.GetResource() == sandbox.WorkspacePVCs
+				}
+				if !fail {
+					return false, nil, nil
+				}
+				faulted.Store(true)
+				injectedOnce.Do(func() { close(injected) })
+				return true, nil, apierrors.NewServiceUnavailable("transient Kubernetes API outage")
+			})
+			runner.notify()
+			wait(injected, "injected API failure")
+			wait(rediscovered, "continued workspace discovery")
+			requireStatus(t, runner, healthyID, "RUNNING")
+			httpRequest := httptest.NewRequest("GET", "/v1/operations/"+healthyID, nil)
+			httpRequest.Header.Set("Authorization", "Bearer control-token")
+			response := httptest.NewRecorder()
+			Handler(c, runner, "control-token").ServeHTTP(response, httpRequest)
+			if response.Code != http.StatusOK {
+				t.Fatalf("healthy operation status unavailable: %d %s", response.Code, response.Body.String())
+			}
+			if submitHTTP(t, c, runner, healthy) != healthyID {
+				t.Fatal("healthy admission changed during unrelated failure")
+			}
+			close(releaseHealthy)
+			wait(healthyComplete, "healthy transition completion")
+			wait(failedComplete, "transient failure recovery")
+			requireStatus(t, runner, taskID(failed), "COMPLETED")
+		})
+	}
+}
+
+func TestNativeProfileMigrationReplacesTaskHandleWithoutReexecution(t *testing.T) {
+	c, _, worker := runnerFixture(t, nil)
+	c.Profiles["next"] = c.Profiles["default"]
+	runner := NewRunner(c)
+	r := request(1, EnsureRunning)
+	submitHTTP(t, c, runner, r)
+	if err := runner.execute(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	running, err := c.current(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = stopRequest(2, ReleaseCompute, running)
+	oldID := submitHTTP(t, c, runner, r)
+	if err := runner.execute(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	released, err := c.current(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := ProfileMigration{WorkspaceID: r.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: released.ProfileHash, ExpectedRevision: r.Revision, ExpectedEpoch: released.Epoch}
+	migrated, err := c.MigrateProfile(context.Background(), migration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID := submitHTTP(t, c, runner, migrated.Request)
+	if newID == oldID {
+		t.Fatal("migration reused the old profile's task handle")
+	}
+	requireStatus(t, runner, newID, "COMPLETED")
+	calls := len(worker.calls)
+	if err := runner.execute(context.Background(), migrated.Request); err != nil || len(worker.calls) != calls {
+		t.Fatalf("migrated release executed again: %v", err)
+	}
+	if _, err := c.MigrateProfile(context.Background(), migration); err != nil {
+		t.Fatal(err)
+	}
+	if duplicate := submitHTTP(t, c, runner, migrated.Request); duplicate != newID {
+		t.Fatal("migration retry changed the replacement handle")
+	}
 }
