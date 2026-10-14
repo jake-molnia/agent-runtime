@@ -69,13 +69,13 @@ func TestGatewayRoutesOnlyAuthenticatedCurrentAllocation(t *testing.T) {
 		t.Fatal(calls)
 	}
 	c.PublicURL = "https://pool.example/base"
-	req := httptest.NewRequest("GET", "/v1/workspaces/"+url.PathEscape(state.Request.WorkspaceID)+"?profile=default", nil)
+	req := httptest.NewRequest("GET", "/v1/workspaces/"+url.PathEscape(state.Request.WorkspaceID), nil)
 	req.Header.Set("Authorization", "Bearer control-token")
 	out := httptest.NewRecorder()
 	handler.ServeHTTP(out, req)
-	var access Access
+	var access Workspace
 	json.Unmarshal(out.Body.Bytes(), &access)
-	if !strings.HasPrefix(access.State.Endpoint, "https://pool.example/base/v1/execution/default/") {
+	if access.Execution == nil || !strings.HasPrefix(access.Execution.Endpoint, "https://pool.example/base/v1/execution/default/") {
 		t.Fatal(out.Body.String())
 	}
 	persisted, _, _ := c.load(context.Background(), "default", state.Request.WorkspaceID)

@@ -4,13 +4,31 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/jake-molnia/agent-runtime/sandbox"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Execute runs under Hatchet's shared per-workspace concurrency limit. Every
 // external mutation also carries resource identity/version checks for retry safety.
-func (c *Controller) Execute(ctx context.Context, r Request) (State, error) {
+func (c *Controller) Execute(ctx context.Context, r Request) (result State, executionErr error) {
+	defer func() {
+		if executionErr == nil {
+			return
+		}
+		failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		s, obj, err := c.load(failureCtx, r.Profile, r.WorkspaceID)
+		if err == nil && digest(s.Request) == digest(r) {
+			s.Error = &WorkspaceError{Code: "lifecycle_failed", Message: "Workspace transition failed; retry the desired state", Retryable: true}
+			if errors.Is(executionErr, ErrWorkerBusy) {
+				s.Error = &WorkspaceError{Code: "worker_busy", Message: "Worker has active work and cannot stop yet", Retryable: true}
+			}
+			_ = c.save(failureCtx, obj, s)
+		}
+	}()
 	if err := r.Validate(); err != nil {
 		return State{}, err
 	}
@@ -53,6 +71,27 @@ func (c *Controller) Execute(ctx context.Context, r Request) (State, error) {
 	return c.stop(ctx, r, s)
 }
 func (c *Controller) ensureRunning(ctx context.Context, r Request, s State) (State, error) {
+	if s.Handle != nil {
+		_, err := c.Control.API.Resource(sandbox.Sandboxes).Namespace(s.Handle.Namespace).Get(ctx, s.Handle.Sandbox, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			if _, err = c.current(ctx, r); err != nil {
+				return s, err
+			}
+			if err = c.deleteSecret(ctx, s); err != nil {
+				return s, err
+			}
+			s.Handle = nil
+			s.Identity = nil
+			s.Endpoint = ""
+			s.Phase = "released"
+			s, err = c.physical(ctx, r, s)
+			if err != nil {
+				return s, err
+			}
+		} else if err != nil {
+			return s, err
+		}
+	}
 	if s.Handle == nil {
 		if s.Phase != "starting" {
 			s.Epoch++
@@ -162,7 +201,7 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 			return s, err
 		}
 		if proof.Identity != identity || proof.Revision != r.Revision || !proof.Quiescent || proof.ActiveOperations != 0 || proof.PendingCallbacks != 0 {
-			return s, errors.New("worker did not prove quiescence")
+			return s, ErrWorkerBusy
 		}
 		if _, err = c.current(ctx, r); err != nil {
 			return s, err

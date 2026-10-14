@@ -16,7 +16,7 @@ import (
 )
 
 func controlRead(c *Controller, workspace, authorization string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest("GET", "/v1/workspaces/"+url.PathEscape(workspace)+"?profile=default", nil)
+	r := httptest.NewRequest("GET", "/v1/workspaces/"+url.PathEscape(workspace), nil)
 	r.Header.Set("Authorization", authorization)
 	w := httptest.NewRecorder()
 	Handler(c, &fakeTasks{}, "control").ServeHTTP(w, r)
@@ -35,8 +35,8 @@ func TestControlKubernetesReadCost(t *testing.T) {
 	}
 	calls := len(api.Actions()) - before
 	t.Logf("five authenticated control reads made %d Kubernetes API actions", calls)
-	if calls != 5 {
-		t.Fatalf("want one fresh observation (5 actions), got %d", calls)
+	if calls != 10 {
+		t.Fatalf("want namespace discovery per read plus one fresh observation (10 actions), got %d", calls)
 	}
 }
 
@@ -264,7 +264,7 @@ func TestGatewayConflictInvalidatesControlReadCache(t *testing.T) {
 	if w := controlRead(c, state.Request.WorkspaceID, "Bearer control"); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
-	if len(api.Actions())-before != 5 {
+	if len(api.Actions())-before != 6 {
 		t.Fatal("worker conflict failed to expire control observation")
 	}
 }

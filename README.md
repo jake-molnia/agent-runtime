@@ -12,6 +12,10 @@ OpenCode V2 is the only supported agent harness. The sandbox builds OpenCode
 a [tool-refresh correction](patches/README.md) and exposes its `opencode` executable
 on `PATH`. `OPENCODE_BINARY` can select another path to an OpenCode V2 binary.
 
+The separate T3 integration manages retained execution workspaces through the
+[workspace lifecycle API](docs/workspace-api.md). T3 keeps its own native harness
+adapters and conversation state; this service allocates and controls its sandboxes.
+
 ## Start with a preset
 
 Build the CLI and select a trusted configuration directory containing your

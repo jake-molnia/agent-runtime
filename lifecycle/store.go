@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"strconv"
+	"time"
 )
 
 const stateAnnotation = "agent-runtime/t3-lifecycle"
@@ -79,6 +80,9 @@ func (c *Controller) load(ctx context.Context, profile, workspace string) (State
 		if err = json.Unmarshal([]byte(encoded), &s); err != nil {
 			return State{}, nil, errors.New("invalid persisted lifecycle state")
 		}
+		if s.PoolID != "" && s.PoolID != c.PoolID {
+			return State{}, nil, errors.New("workspace pool changed")
+		}
 		if s.Request.Profile != profile || s.ProfileHash != digest(p) {
 			return State{}, nil, errors.New("workspace profile changed")
 		}
@@ -125,7 +129,10 @@ func (c *Controller) Admit(ctx context.Context, r Request) (State, error) {
 		return s, errors.New("operation ID reused with different revision")
 	}
 	s.Request = r
+	s.PoolID = c.PoolID
 	s.TaskID = ""
+	s.Error = nil
+	s.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	s.ProfileHash = digest(c.Profiles[r.Profile])
 	if s.Phase == "" {
 		s.Phase = "released"
@@ -144,6 +151,7 @@ func (c *Controller) SetTask(ctx context.Context, r Request, taskID string) erro
 		return errors.New("operation superseded")
 	}
 	s.TaskID = taskID
+	s.Error = nil
 	return c.save(ctx, obj, s)
 }
 func (c *Controller) current(ctx context.Context, r Request) (State, error) {
@@ -161,6 +169,10 @@ func (c *Controller) physical(ctx context.Context, r Request, next State) (State
 	if err != nil {
 		return s, err
 	}
+	if next.Phase != s.Phase {
+		next.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	next.Error = nil
 	next.Request = s.Request
 	next.TaskID = s.TaskID
 	if err = c.save(ctx, obj, next); err != nil {

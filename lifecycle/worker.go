@@ -9,6 +9,8 @@ import (
 	"net/http"
 )
 
+var ErrWorkerBusy = errors.New("worker has active work")
+
 type HTTPWorker struct{ Client *http.Client }
 
 func (w HTTPWorker) call(ctx context.Context, endpoint, token, path string, input, output any) error {
@@ -33,6 +35,9 @@ func (w HTTPWorker) call(ctx context.Context, endpoint, token, path string, inpu
 		return errors.New("worker unreachable")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusConflict && path == "/v1/quiesce" {
+		return ErrWorkerBusy
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("worker rejected lifecycle request")
 	}
