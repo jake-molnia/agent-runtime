@@ -16,6 +16,7 @@ import (
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"github.com/google/uuid"
 	"github.com/jake-molnia/agent-runtime/sandbox"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -412,6 +413,34 @@ func TestReplicaCannotExecuteWhilePreviousTransitionIsRunning(t *testing.T) {
 	}
 	requireStatus(t, other, id, "CANCELLED")
 	requireStatus(t, other, nextID, "COMPLETED")
+}
+
+func TestTransitionLeaseDecodesAsKubernetesLease(t *testing.T) {
+	c, api, _ := runnerFixture(t, nil)
+	r := request(1, EnsureRunning)
+	start := time.Date(2026, time.October, 15, 1, 47, 19, 713240435, time.UTC)
+	for _, now := range []time.Time{start, start.Add(6 * time.Minute)} {
+		release, err := c.acquireTransition(context.Background(), r, now)
+		if err != nil || release == nil {
+			t.Fatalf("acquire transition: %v", err)
+		}
+		defer release()
+		lease, err := api.Resource(transitionLeases).Namespace("test").Get(context.Background(), sandbox.WorkspacePVCName(r.WorkspaceID), metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded coordinationv1.Lease
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("Kubernetes cannot decode transition lease: %v", err)
+		}
+		if decoded.Spec.RenewTime == nil || !decoded.Spec.RenewTime.Time.Equal(now.Truncate(time.Microsecond)) {
+			t.Fatalf("unexpected renew time: %v", decoded.Spec.RenewTime)
+		}
+	}
 }
 
 func TestExpiredLeaseOwnerCannotReleaseSuccessor(t *testing.T) {

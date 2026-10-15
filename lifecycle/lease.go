@@ -40,7 +40,7 @@ func (c *Controller) acquireTransition(ctx context.Context, request Request, now
 			return nil, nil
 		}
 	}
-	lease.Object["spec"] = map[string]any{"holderIdentity": holder, "leaseDurationSeconds": int64(300), "renewTime": now.UTC().Format(time.RFC3339Nano)}
+	lease.Object["spec"] = map[string]any{"holderIdentity": holder, "leaseDurationSeconds": int64(300), "renewTime": now.UTC().Format(metav1.RFC3339Micro)}
 	if create {
 		lease, err = api.Create(ctx, lease, metav1.CreateOptions{})
 	} else {
