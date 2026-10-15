@@ -37,6 +37,10 @@ func desktopHandler(ctx context.Context, ready <-chan struct{}, next http.Handle
 				http.Error(w, "desktop starting", http.StatusServiceUnavailable)
 				return
 			}
+			if err := desktopBrowserReady(r.Context()); err != nil {
+				http.Error(w, "desktop browser unavailable", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/initialize" {
 			select {
@@ -160,18 +164,7 @@ func runDesktopWithEnvironment(ctx context.Context, root string, onEnvironment, 
 	start("markitdown-mcp", "--http", "--host", "127.0.0.1", "--port", "8932")
 	start("aiod", "start", "--host", "127.0.0.1", "--port", "18091", "--runtime-dir", filepath.Join(state, "aio"))
 	start("websockify", "--web="+viewer, "127.0.0.1:6080", "127.0.0.1:5900")
-	if err := waitDesktop(lifetime, "Chromium", func(ctx context.Context) error {
-		var version struct {
-			WebSocket string `json:"webSocketDebuggerUrl"`
-		}
-		if err := desktopJSON(ctx, "http://127.0.0.1:9222/json/version", &version); err != nil {
-			return err
-		}
-		if version.WebSocket == "" {
-			return errors.New("CDP websocket unavailable")
-		}
-		return nil
-	}); err != nil {
+	if err := waitDesktop(lifetime, "Chromium", desktopBrowserReady); err != nil {
 		return err
 	}
 	start("playwright-mcp", "--host", "127.0.0.1", "--allowed-hosts", "127.0.0.1:8931", "--port", "8931", "--cdp-endpoint", "http://127.0.0.1:9222", "--shared-browser-context", "--caps", "vision,pdf,devtools", "--no-webmcp", "--image-responses", "allow", "--output-dir", filepath.Join(state, "browser-output"))
@@ -267,6 +260,19 @@ func waitDesktop(ctx context.Context, name string, probe func(context.Context) e
 }
 
 var desktopHTTP = &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+func desktopBrowserReady(ctx context.Context) error {
+	var version struct {
+		WebSocket string `json:"webSocketDebuggerUrl"`
+	}
+	if err := desktopJSON(ctx, "http://127.0.0.1:9222/json/version", &version); err != nil {
+		return err
+	}
+	if version.WebSocket == "" {
+		return errors.New("CDP websocket unavailable")
+	}
+	return nil
+}
 
 func desktopJSON(ctx context.Context, url string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

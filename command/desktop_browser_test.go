@@ -41,6 +41,15 @@ func TestDesktopBrowserProcess(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/json/version" {
+			ready, _ := os.ReadFile(filepath.Join(dir, "cdp-ready"))
+			if string(ready) != strconv.Itoa(count) {
+				http.Error(w, "browser starting", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": "ws://" + listener.Addr().String() + "/devtools/browser"})
+			return
+		}
 		if r.URL.Path == "/close" {
 			os.Exit(0)
 		}

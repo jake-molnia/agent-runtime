@@ -15,6 +15,11 @@ import (
 )
 
 func TestColdSandboxInitializationWaitsForDesktop(t *testing.T) {
+	cdp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"ws://browser/devtools"}`))
+	}))
+	defer cdp.Close()
+	routeDesktopProbe(t, func() string { return strings.TrimPrefix(cdp.URL, "http://") })
 	ready := make(chan struct{})
 	var initialized atomic.Bool
 	handler := desktopHandler(context.Background(), ready, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
