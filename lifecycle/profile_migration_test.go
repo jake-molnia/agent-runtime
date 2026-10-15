@@ -16,7 +16,7 @@ func TestProfileMigrationPreservesStorageAndFencesOldExecution(t *testing.T) {
 	target.PodTemplate.Spec.Containers[0].Image = "worker:v2"
 	c.Profiles["next"] = target
 	running := run(t, c, request(1, EnsureRunning))
-	migration := ProfileMigration{WorkspaceID: running.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: running.ProfileHash, ExpectedRevision: 1, ExpectedEpoch: running.Epoch}
+	migration := ProfileMigration{OperationID: "test-migration", ExpectedBindingGeneration: new(uint64), WorkspaceID: running.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: running.ProfileHash, ExpectedRevision: 1, ExpectedEpoch: running.Epoch}
 	if _, err := c.MigrateProfile(ctx, migration); err == nil {
 		t.Fatal("migrated live allocation")
 	}
@@ -63,7 +63,7 @@ func TestProfileMigrationRejectsChangedStorageAndStaleState(t *testing.T) {
 			state := run(t, c, request(1, EnsureRunning))
 			state = run(t, c, stopRequest(2, ReleaseCompute, state))
 			target := c.Profiles["default"]
-			migration := ProfileMigration{WorkspaceID: state.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: state.ProfileHash, ExpectedRevision: 2, ExpectedEpoch: state.Epoch}
+			migration := ProfileMigration{OperationID: "test-migration", ExpectedBindingGeneration: new(uint64), WorkspaceID: state.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: state.ProfileHash, ExpectedRevision: 2, ExpectedEpoch: state.Epoch}
 			switch test {
 			case "namespace":
 				target.Namespace = "elsewhere"
@@ -87,5 +87,50 @@ func TestProfileMigrationRejectsChangedStorageAndStaleState(t *testing.T) {
 				t.Fatal("unsafe migration accepted")
 			}
 		})
+	}
+}
+
+func TestProfileMigrationRejectsSupersededRetryAfterRollback(t *testing.T) {
+	c, _, _ := fixture(t)
+	c.Profiles["next"] = c.Profiles["default"]
+	s := run(t, c, request(1, EnsureRunning))
+	s = run(t, c, stopRequest(2, ReleaseCompute, s))
+	original := ProfileMigration{OperationID: "forward", ExpectedBindingGeneration: new(uint64), WorkspaceID: s.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: s.ProfileHash, ExpectedRevision: s.Request.Revision, ExpectedEpoch: s.Epoch}
+	first, err := c.MigrateProfile(t.Context(), original)
+	if err != nil || first.BindingGeneration != 1 {
+		t.Fatal(first, err)
+	}
+	if _, err = c.MigrateProfile(t.Context(), original); err != nil {
+		t.Fatal("immediate retry failed", err)
+	}
+	generation := first.BindingGeneration
+	rollback := ProfileMigration{OperationID: "rollback", ExpectedBindingGeneration: &generation, WorkspaceID: s.Request.WorkspaceID, FromProfile: "next", ToProfile: "default", ExpectedProfileHash: first.ProfileHash, ExpectedRevision: s.Request.Revision, ExpectedEpoch: s.Epoch}
+	back, err := c.MigrateProfile(t.Context(), rollback)
+	if err != nil || back.BindingGeneration != 2 {
+		t.Fatal(back, err)
+	}
+	if _, err = c.MigrateProfile(t.Context(), original); err == nil {
+		t.Fatal("delayed forward overrode rollback")
+	}
+	generation = back.BindingGeneration
+	newer := original
+	newer.OperationID = "new-forward"
+	newer.ExpectedBindingGeneration = &generation
+	latest, err := c.MigrateProfile(t.Context(), newer)
+	if err != nil || latest.BindingGeneration != 3 {
+		t.Fatal(latest, err)
+	}
+	if _, err = c.MigrateProfile(t.Context(), original); err == nil {
+		t.Fatal("old operation adopted newer forward")
+	}
+	foreign := newer
+	foreign.OperationID = "different-operation"
+	if _, err = c.MigrateProfile(t.Context(), foreign); err == nil {
+		t.Fatal("foreign operation adopted migration")
+	}
+	missing := newer
+	missing.ExpectedBindingGeneration = nil
+	if _, err = c.MigrateProfile(t.Context(), missing); err == nil {
+		t.Fatal("migration without binding generation accepted")
 	}
 }

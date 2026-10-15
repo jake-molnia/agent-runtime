@@ -8,16 +8,18 @@ import (
 // ProfileMigration changes execution software only after compute was released.
 // Namespace and storage stay immutable; the retained PVC and epoch are preserved.
 type ProfileMigration struct {
-	WorkspaceID         string `json:"workspaceId"`
-	FromProfile         string `json:"fromProfile"`
-	ToProfile           string `json:"toProfile"`
-	ExpectedProfileHash string `json:"expectedProfileHash"`
-	ExpectedRevision    uint64 `json:"expectedRevision"`
-	ExpectedEpoch       uint64 `json:"expectedEpoch"`
+	OperationID               string  `json:"operationId"`
+	ExpectedBindingGeneration *uint64 `json:"expectedBindingGeneration"`
+	WorkspaceID               string  `json:"workspaceId"`
+	FromProfile               string  `json:"fromProfile"`
+	ToProfile                 string  `json:"toProfile"`
+	ExpectedProfileHash       string  `json:"expectedProfileHash"`
+	ExpectedRevision          uint64  `json:"expectedRevision"`
+	ExpectedEpoch             uint64  `json:"expectedEpoch"`
 }
 
 func (c *Controller) MigrateProfile(ctx context.Context, r ProfileMigration) (State, error) {
-	if r.WorkspaceID == "" || len(r.WorkspaceID) > 512 || r.FromProfile == "" || r.ToProfile == "" || r.FromProfile == r.ToProfile || r.ExpectedRevision == 0 {
+	if r.OperationID == "" || len(r.OperationID) > 512 || r.ExpectedBindingGeneration == nil || *r.ExpectedBindingGeneration >= 9007199254740991 || r.WorkspaceID == "" || len(r.WorkspaceID) > 512 || r.FromProfile == "" || r.ToProfile == "" || r.FromProfile == r.ToProfile || r.ExpectedRevision == 0 {
 		return State{}, errors.New("workspace, distinct profiles and expected revision required")
 	}
 	from, fromOK := c.Profiles[r.FromProfile]
@@ -40,14 +42,23 @@ func (c *Controller) MigrateProfile(ctx context.Context, r ProfileMigration) (St
 	if s.Request.Revision != r.ExpectedRevision || s.Epoch != r.ExpectedEpoch || s.Phase != "released" || s.Handle != nil || s.Identity != nil || s.Endpoint != "" || s.CompletedOperation != s.Request.OperationID {
 		return State{}, errors.New("profile migration requires the expected completed release")
 	}
+	if s.Request.Profile == r.ToProfile {
+		if s.BindingGeneration != *r.ExpectedBindingGeneration+1 || s.LastProfileMigration == nil || digest(*s.LastProfileMigration) != digest(r) {
+			return State{}, errors.New("profile migration was superseded")
+		}
+		return s, nil
+	}
+	if s.BindingGeneration != *r.ExpectedBindingGeneration || (s.LastProfileMigration != nil && s.LastProfileMigration.OperationID == r.OperationID) {
+		return State{}, errors.New("profile binding generation changed")
+	}
 	c.invalidateGateway(r.FromProfile, r.WorkspaceID)
 	defer c.invalidateGateway(r.FromProfile, r.WorkspaceID)
-	if s.Request.Profile != r.ToProfile {
-		s.TaskID = ""
-		s.Operation = nil
-	}
+	s.TaskID = ""
+	s.Operation = nil
 	s.Request.Profile = r.ToProfile
 	s.ProfileHash = digest(to)
+	s.BindingGeneration++
+	s.LastProfileMigration = &r
 	if err = c.save(ctx, obj, s); err != nil {
 		return State{}, err
 	}

@@ -17,9 +17,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"strconv"
+	"time"
 )
 
 const stateAnnotation = "agent-runtime/t3-lifecycle"
+
+var errWorkspaceProfileChanged = errors.New("workspace profile changed")
 
 var secrets = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
@@ -79,8 +82,11 @@ func (c *Controller) load(ctx context.Context, profile, workspace string) (State
 		if err = json.Unmarshal([]byte(encoded), &s); err != nil {
 			return State{}, nil, errors.New("invalid persisted lifecycle state")
 		}
-		if s.Request.Profile != profile || s.ProfileHash != digest(p) || (s.PoolID != nil && *s.PoolID != c.PoolID) {
-			return State{}, nil, errors.New("workspace profile changed")
+		if s.PoolID != nil && *s.PoolID != c.PoolID {
+			return State{}, nil, errors.New("workspace pool changed")
+		}
+		if s.Request.Profile != profile || s.ProfileHash != digest(p) {
+			return State{}, nil, errWorkspaceProfileChanged
 		}
 	}
 	return s, obj, nil
@@ -131,9 +137,11 @@ func (c *Controller) Admit(ctx context.Context, r Request) (State, error) {
 		return s, errors.New("operation ID reused with different revision")
 	}
 	s.Request = r
-	s.TaskID = ""
-	s.Operation = nil
 	s.PoolID = &c.PoolID
+	s.TaskID = ""
+	s.Error = nil
+	s.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	s.Operation = nil
 	s.ProfileHash = digest(c.Profiles[r.Profile])
 	if s.Phase == "" {
 		s.Phase = "released"
@@ -151,10 +159,11 @@ func (c *Controller) SetTask(ctx context.Context, r Request, taskID string) erro
 	if digest(s.Request) != digest(r) {
 		return errors.New("operation superseded")
 	}
-	if s.TaskID == taskID {
+	if s.TaskID == taskID && s.Error == nil {
 		return nil
 	}
 	s.TaskID = taskID
+	s.Error = nil
 	return c.save(ctx, obj, s)
 }
 func (c *Controller) current(ctx context.Context, r Request) (State, error) {
@@ -172,7 +181,16 @@ func (c *Controller) physical(ctx context.Context, r Request, next State) (State
 	if err != nil {
 		return s, err
 	}
+	if next.Phase != s.Phase {
+		next.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	next.Error = nil
+	if digest(next.Request) != digest(s.Request) {
+		next.PendingStopIdentity = s.PendingStopIdentity
+	}
 	next.Request = s.Request
+	next.BindingGeneration = s.BindingGeneration
+	next.LastProfileMigration = s.LastProfileMigration
 	next.TaskID = s.TaskID
 	next.Operation = s.Operation
 	next.PoolID = s.PoolID
@@ -204,13 +222,26 @@ func (c *Controller) ensureSecret(ctx context.Context, s State) error {
 	return nil
 }
 func (c *Controller) Access(ctx context.Context, profile, workspace string) (Access, error) {
+	return c.observeWorker(ctx, profile, workspace, c.Control.ObserveWorkspace)
+}
+
+// Stop admission refreshes the authenticated worker identity without granting
+// execution access to a workspace whose retained storage has expanded.
+func (c *Controller) observeForStop(ctx context.Context, profile, workspace string) (State, error) {
+	access, err := c.observeWorker(ctx, profile, workspace, func(ctx context.Context, h sandbox.WorkspaceHandle) (sandbox.WorkspaceObservation, error) {
+		return c.Control.ObserveWorkspaceForStop(ctx, h, c.Profiles[profile].Storage)
+	})
+	return access.State, err
+}
+
+func (c *Controller) observeWorker(ctx context.Context, profile, workspace string, observe func(context.Context, sandbox.WorkspaceHandle) (sandbox.WorkspaceObservation, error)) (Access, error) {
 	s, obj, err := c.load(ctx, profile, workspace)
 	if err != nil {
 		return Access{}, err
 	}
 	a := Access{State: s}
 	if s.Phase == "running" && s.Handle != nil {
-		observation, err := c.Control.ObserveWorkspace(ctx, *s.Handle)
+		observation, err := observe(ctx, *s.Handle)
 		if err != nil {
 			return Access{}, errors.New("current allocation could not be observed")
 		}

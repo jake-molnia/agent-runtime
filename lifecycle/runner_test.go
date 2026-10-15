@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -102,23 +102,19 @@ func runnerFixture(t *testing.T, saved func(State)) (*Controller, *fake.FakeDyna
 	return c, api, worker
 }
 
-func submitHTTP(t *testing.T, c *Controller, runner *Runner, r Request) string {
+func submitInternal(t *testing.T, c *Controller, runner *Runner, r Request) string {
 	t.Helper()
-	body, _ := json.Marshal(r)
-	request := httptest.NewRequest("POST", "/v1/operations", strings.NewReader(string(body)))
-	request.Header.Set("Authorization", "Bearer control-token")
-	out := httptest.NewRecorder()
-	Handler(c, runner, "control-token").ServeHTTP(out, request)
-	if out.Code != 202 {
-		t.Fatalf("submission: %d %s", out.Code, out.Body.String())
+	if _, err := c.Admit(t.Context(), r); err != nil {
+		t.Fatal(err)
 	}
-	var response struct {
-		TaskID string `json:"taskId"`
+	id, err := runner.Submit(t.Context(), r)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(out.Body.Bytes(), &response); err != nil || response.TaskID == "" {
-		t.Fatalf("invalid task response: %s", out.Body.String())
+	if err := c.SetTask(t.Context(), r, id); err != nil {
+		t.Fatal(err)
 	}
-	return response.TaskID
+	return id
 }
 
 func requireStatus(t *testing.T, runner *Runner, id, want string) {
@@ -129,12 +125,12 @@ func requireStatus(t *testing.T, runner *Runner, id, want string) {
 	}
 }
 
-func TestNativeLifecycleHTTPAndDuplicateSubmission(t *testing.T) {
+func TestNativeLifecycleAndDuplicateSubmission(t *testing.T) {
 	c, _, worker := runnerFixture(t, nil)
 	runner := NewRunner(c)
 	r := request(1, EnsureRunning)
-	id := submitHTTP(t, c, runner, r)
-	if again := submitHTTP(t, c, runner, r); again != id {
+	id := submitInternal(t, c, runner, r)
+	if again := submitInternal(t, c, runner, r); again != id {
 		t.Fatal("duplicate submission changed task identity")
 	}
 	requireStatus(t, runner, id, "QUEUED")
@@ -154,7 +150,7 @@ func TestNativeLifecycleHTTPAndDuplicateSubmission(t *testing.T) {
 		if action != EnsureRunning {
 			r = stopRequest(uint64(i+2), action, s)
 		}
-		id = submitHTTP(t, c, runner, r)
+		id = submitInternal(t, c, runner, r)
 		if err := runner.execute(context.Background(), r); err != nil {
 			t.Fatal(err)
 		}
@@ -210,7 +206,7 @@ func TestRunnerRecoversInterruptedAttemptAndExpiredLease(t *testing.T) {
 	c, _, _ := runnerFixture(t, nil)
 	r := request(1, EnsureRunning)
 	runner := NewRunner(c)
-	id := submitHTTP(t, c, runner, r)
+	id := submitInternal(t, c, runner, r)
 	s, obj, err := c.load(context.Background(), r.Profile, r.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +335,7 @@ func TestRunnerRetriesAreBoundedAndExplicitRetryWorks(t *testing.T) {
 	c.Worker = resumeWorker{Worker: worker, resume: func(context.Context) error { return errors.New("worker unavailable") }}
 	runner := NewRunner(c)
 	r := request(1, EnsureRunning)
-	id := submitHTTP(t, c, runner, r)
+	id := submitInternal(t, c, runner, r)
 	for attempt := 1; attempt <= 4; attempt++ {
 		if err := runner.execute(context.Background(), r); err != nil {
 			t.Fatal(err)
@@ -362,7 +358,7 @@ func TestRunnerRetriesAreBoundedAndExplicitRetryWorks(t *testing.T) {
 		t.Fatalf("failed operation was automatically retried: %v %v", pending, err)
 	}
 	c.Worker = worker
-	if retryID := submitHTTP(t, c, runner, r); retryID != id {
+	if retryID := submitInternal(t, c, runner, r); retryID != id {
 		t.Fatal("retry changed operation identity")
 	}
 	if err = runner.execute(context.Background(), r); err != nil {
@@ -384,7 +380,7 @@ func TestReplicaCannotExecuteWhilePreviousTransitionIsRunning(t *testing.T) {
 	}}
 	runner := NewRunner(c)
 	r := request(2, EnsureRunning)
-	id := submitHTTP(t, c, runner, r)
+	id := submitInternal(t, c, runner, r)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -399,7 +395,7 @@ func TestReplicaCannotExecuteWhilePreviousTransitionIsRunning(t *testing.T) {
 		t.Fatalf("duplicate transition reached the worker: %v", err)
 	}
 	next := request(3, EnsureRunning)
-	nextID := submitHTTP(t, c, other, next)
+	nextID := submitInternal(t, c, other, next)
 	if err := other.execute(context.Background(), next); err != nil || calls.Load() != 1 {
 		t.Fatalf("new transition overlapped old transition: %v", err)
 	}
@@ -469,7 +465,7 @@ func TestNativeRunnerPoolOwnershipAndLegacyCutover(t *testing.T) {
 	c, _, _ := runnerFixture(t, nil)
 	r := request(1, EnsureRunning)
 	runner := NewRunner(c)
-	id := submitHTTP(t, c, runner, r)
+	id := submitInternal(t, c, runner, r)
 	other, err := New(c.Control, c.Profiles, c.SecretKey)
 	if err != nil {
 		t.Fatal(err)
@@ -497,7 +493,7 @@ func TestNativeRunnerPoolOwnershipAndLegacyCutover(t *testing.T) {
 	requireStatus(t, runner, s.TaskID, "CANCELLED")
 	other.Worker = c.Worker
 	cutover := NewRunner(other)
-	newID := submitHTTP(t, other, cutover, r)
+	newID := submitInternal(t, other, cutover, r)
 	if err = cutover.execute(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +541,7 @@ func TestRunnerKeepsOtherTransitionsAliveThroughInfrastructureErrors(t *testing.
 				}
 			}}
 			runner := NewRunner(c)
-			healthyID := submitHTTP(t, c, runner, healthy)
+			healthyID := submitInternal(t, c, runner, healthy)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() { done <- runner.Run(ctx) }()
@@ -619,14 +615,14 @@ func TestRunnerKeepsOtherTransitionsAliveThroughInfrastructureErrors(t *testing.
 			wait(injected, "injected API failure")
 			wait(rediscovered, "continued workspace discovery")
 			requireStatus(t, runner, healthyID, "RUNNING")
-			httpRequest := httptest.NewRequest("GET", "/v1/operations/"+healthyID, nil)
+			httpRequest := httptest.NewRequest("GET", "/v1/workspaces/"+url.PathEscape(healthy.WorkspaceID), nil)
 			httpRequest.Header.Set("Authorization", "Bearer control-token")
 			response := httptest.NewRecorder()
 			Handler(c, runner, "control-token").ServeHTTP(response, httpRequest)
 			if response.Code != http.StatusOK {
 				t.Fatalf("healthy operation status unavailable: %d %s", response.Code, response.Body.String())
 			}
-			if submitHTTP(t, c, runner, healthy) != healthyID {
+			if submitInternal(t, c, runner, healthy) != healthyID {
 				t.Fatal("healthy admission changed during unrelated failure")
 			}
 			close(releaseHealthy)
@@ -642,7 +638,7 @@ func TestNativeProfileMigrationReplacesTaskHandleWithoutReexecution(t *testing.T
 	c.Profiles["next"] = c.Profiles["default"]
 	runner := NewRunner(c)
 	r := request(1, EnsureRunning)
-	submitHTTP(t, c, runner, r)
+	submitInternal(t, c, runner, r)
 	if err := runner.execute(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +647,7 @@ func TestNativeProfileMigrationReplacesTaskHandleWithoutReexecution(t *testing.T
 		t.Fatal(err)
 	}
 	r = stopRequest(2, ReleaseCompute, running)
-	oldID := submitHTTP(t, c, runner, r)
+	oldID := submitInternal(t, c, runner, r)
 	if err := runner.execute(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
@@ -659,12 +655,12 @@ func TestNativeProfileMigrationReplacesTaskHandleWithoutReexecution(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	migration := ProfileMigration{WorkspaceID: r.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: released.ProfileHash, ExpectedRevision: r.Revision, ExpectedEpoch: released.Epoch}
+	migration := ProfileMigration{OperationID: "test-migration", ExpectedBindingGeneration: new(uint64), WorkspaceID: r.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: released.ProfileHash, ExpectedRevision: r.Revision, ExpectedEpoch: released.Epoch}
 	migrated, err := c.MigrateProfile(context.Background(), migration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newID := submitHTTP(t, c, runner, migrated.Request)
+	newID := submitInternal(t, c, runner, migrated.Request)
 	if newID == oldID {
 		t.Fatal("migration reused the old profile's task handle")
 	}
@@ -676,7 +672,7 @@ func TestNativeProfileMigrationReplacesTaskHandleWithoutReexecution(t *testing.T
 	if _, err := c.MigrateProfile(context.Background(), migration); err != nil {
 		t.Fatal(err)
 	}
-	if duplicate := submitHTTP(t, c, runner, migrated.Request); duplicate != newID {
+	if duplicate := submitInternal(t, c, runner, migrated.Request); duplicate != newID {
 		t.Fatal("migration retry changed the replacement handle")
 	}
 }

@@ -187,3 +187,32 @@ func TestAdmissionRejectsRetainedCompletionIDReuse(t *testing.T) {
 		t.Fatalf("exact completed release retry rejected: %v", err)
 	}
 }
+
+func TestAccessCannotEraseCompletionOfObservedRequest(t *testing.T) {
+	c, _, worker := runnerFixture(t, nil)
+	run(t, c, request(1, EnsureRunning))
+	next := request(2, EnsureRunning)
+	if _, err := c.Admit(t.Context(), next); err != nil {
+		t.Fatal(err)
+	}
+	worker.identity.Incarnation = "replacement"
+	replica := controllerReplica(t, c)
+	blocked := &delayedIdentityWorker{Worker: worker, entered: make(chan struct{}), proceed: make(chan struct{})}
+	c.Worker = blocked
+	done := make(chan error, 1)
+	go func() { _, err := c.Access(t.Context(), next.Profile, next.WorkspaceID); done <- err }()
+	<-blocked.entered
+	if _, err := replica.Execute(t.Context(), next); err != nil {
+		close(blocked.proceed)
+		<-done
+		t.Fatal(err)
+	}
+	close(blocked.proceed)
+	if err := <-done; err == nil {
+		t.Fatal("delayed observation overwrote completed transition")
+	}
+	saved, _, err := c.load(t.Context(), next.Profile, next.WorkspaceID)
+	if err != nil || saved.CompletedOperation != next.OperationID {
+		t.Fatal(saved, err)
+	}
+}

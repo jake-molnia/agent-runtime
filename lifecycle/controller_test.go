@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	jsonpatch "github.com/evanphx/json-patch/v5"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -37,7 +39,7 @@ func (w *fakeWorker) Quiesce(_ context.Context, _, _ string, r WorkerRequest) (Q
 		w.onQuiesce()
 	}
 	if w.busy {
-		return Quiescence{}, errors.New("busy")
+		return Quiescence{}, ErrWorkerBusy
 	}
 	return Quiescence{Identity: w.identity, Revision: r.Revision, Quiescent: true}, nil
 }
@@ -58,6 +60,31 @@ func fixture(t *testing.T) (*Controller, *fake.FakeDynamicClient, *fakeWorker) {
 			activateFake(t, api, obj, worker)
 		}
 		return false, nil, nil
+	})
+	api.PrependReactor("patch", "persistentvolumeclaims", func(a ktesting.Action) (bool, runtime.Object, error) {
+		action := a.(ktesting.PatchAction)
+		raw, err := api.Tracker().Get(sandbox.WorkspacePVCs, a.GetNamespace(), action.GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		obj := raw.(*unstructured.Unstructured)
+		data, _ := json.Marshal(obj.Object)
+		patch, err := jsonpatch.DecodePatch(action.GetPatch())
+		if err != nil {
+			return true, nil, err
+		}
+		data, err = patch.Apply(data)
+		if err != nil {
+			return true, nil, err
+		}
+		next := &unstructured.Unstructured{}
+		if err = json.Unmarshal(data, &next.Object); err != nil {
+			return true, nil, err
+		}
+		revision, _ := strconv.Atoi(obj.GetResourceVersion())
+		next.SetResourceVersion(strconv.Itoa(revision + 1))
+		err = api.Tracker().Update(sandbox.WorkspacePVCs, next, a.GetNamespace())
+		return true, next, err
 	})
 	api.PrependReactor("patch", "sandboxes", func(a ktesting.Action) (bool, runtime.Object, error) {
 		patch := a.(ktesting.PatchAction)
