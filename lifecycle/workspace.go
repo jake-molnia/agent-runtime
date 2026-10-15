@@ -91,6 +91,9 @@ func desiredState(action Action) string {
 }
 func workspaceVersion(s State) string {
 	incarnation := s.Request.ExpectedIncarnation
+	if s.PendingStopIdentity != nil {
+		incarnation = s.PendingStopIdentity.Incarnation
+	}
 	if s.Identity != nil {
 		incarnation = s.Identity.Incarnation
 	}
@@ -189,6 +192,9 @@ func (c *Controller) registerWorkspace(ctx context.Context, id, pool, profile st
 	}
 	s, obj, err := c.load(ctx, profile, id)
 	if err != nil {
+		if errors.Is(err, errWorkspaceProfileChanged) {
+			return State{}, false, failure(409, "binding_conflict", "Workspace profile is immutable; use an explicit migration", false)
+		}
 		return State{}, false, err
 	}
 	if s.Request.Profile != "" {
@@ -335,7 +341,17 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 			writeWorkspaceFailure(w, err)
 			return
 		}
-		observed := c.workspaceResource(r.Context(), s, tasks, true)
+		observedState := s.Phase
+		if action != EnsureRunning && s.Phase == "running" {
+			current, observeErr := c.observeForStop(r.Context(), s.Request.Profile, s.Request.WorkspaceID)
+			if observeErr != nil {
+				observedState = "unavailable"
+			} else {
+				observedState = current.Phase
+			}
+		} else {
+			observedState = c.workspaceResource(r.Context(), s, tasks, true).State
+		}
 		s, obj, err := c.load(r.Context(), s.Request.Profile, s.Request.WorkspaceID)
 		if err != nil {
 			writeWorkspaceFailure(w, err)
@@ -347,11 +363,11 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 		}
 		completed := s.CompletedOperation == s.Request.OperationID
 		sameIntent := s.Request.Action == action
-		if sameIntent && completed && observed.State == input.DesiredState {
-			writeWorkspace(w, 200, observed)
+		if sameIntent && completed && observedState == input.DesiredState {
+			writeWorkspace(w, 200, c.workspaceResource(r.Context(), s, tasks, false))
 			return
 		}
-		if action != EnsureRunning && s.Identity != nil && observed.State == "unavailable" {
+		if action != EnsureRunning && s.Identity != nil && observedState == "unavailable" {
 			writeAPIError(w, 409, "worker_unavailable", "Cannot stop compute without an authenticated worker identity", true)
 			return
 		}

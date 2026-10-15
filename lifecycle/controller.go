@@ -194,8 +194,11 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 	if s.Handle.AllocationID != expectedAllocation || s.Epoch != expectedGeneration || s.Identity == nil || s.Identity.Incarnation != expectedIncarnation {
 		return s, errors.New("destructive request targets stale execution identity")
 	}
-	observation, err := c.Control.ObserveWorkspace(ctx, *s.Handle)
+	observation, err := c.Control.ObserveWorkspaceForStop(ctx, *s.Handle, c.Profiles[r.Profile].Storage)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return c.completeMissingStop(ctx, r, s, err)
+		}
 		return s, err
 	}
 	h := observation.Handle
@@ -241,7 +244,7 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 			return s, err
 		}
 	}
-	observation, err = c.Control.WaitWorkspaceMode(ctx, h, sandbox.WorkspaceSuspended)
+	observation, err = c.Control.WaitWorkspaceModeForStop(ctx, h, sandbox.WorkspaceSuspended, c.Profiles[r.Profile].Storage)
 	if err != nil {
 		return s, err
 	}
@@ -298,26 +301,17 @@ func (c *Controller) resolvePendingStop(ctx context.Context, r Request, s State)
 		}
 	}
 	if s.Handle == nil {
-		if _, err := c.current(ctx, r); err != nil {
-			return s, err
-		}
-		if s.Epoch > 0 {
-			if err := c.deleteSecret(ctx, s); err != nil {
-				return s, err
-			}
-		}
-		s.Identity = nil
-		s.Endpoint = ""
-		s.Phase = desiredState(r.Action)
-		s.CompletedOperation = r.OperationID
-		return c.physical(ctx, r, s)
+		return c.completeMissingStop(ctx, r, s, errors.New("pending allocation still exists"))
 	}
 	if s.PendingStopIdentity != nil {
 		return s, nil
 	}
 	if s.Identity == nil {
-		observation, err := c.Control.WaitWorkspaceMode(ctx, *s.Handle, sandbox.WorkspaceRunning)
+		observation, err := c.Control.WaitWorkspaceModeForStop(ctx, *s.Handle, sandbox.WorkspaceRunning, c.Profiles[r.Profile].Storage)
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return c.completeMissingStop(ctx, r, s, err)
+			}
 			return s, err
 		}
 		address := endpoint(observation.Host, c.Profiles[r.Profile].Port)
@@ -335,5 +329,45 @@ func (c *Controller) resolvePendingStop(ctx context.Context, r Request, s State)
 	}
 	target := *s.Identity
 	s.PendingStopIdentity = &target
+	return c.physical(ctx, r, s)
+}
+
+// Dependency lookup failures do not prove compute is gone. Only a direct read of
+// the saved allocation name may authorize cleanup, under the transition lease.
+func (c *Controller) completeMissingStop(ctx context.Context, r Request, s State, observationErr error) (State, error) {
+	if s.Epoch > 0 {
+		namespace := c.Profiles[r.Profile].Namespace
+		name := sandbox.WorkspaceSandboxName(r.WorkspaceID, strconv.FormatUint(s.Epoch, 10))
+		if s.Handle != nil && (s.Handle.Namespace != namespace || s.Handle.Sandbox != name || s.Handle.AllocationID != strconv.FormatUint(s.Epoch, 10)) {
+			return s, errors.New("pending stop allocation identity changed")
+		}
+		obj, err := c.Control.API.Resource(sandbox.Sandboxes).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err == nil {
+			if s.Handle != nil && obj.GetUID() != s.Handle.UID {
+				return s, errors.New("pending stop allocation was replaced")
+			}
+			return s, observationErr
+		}
+		if !apierrors.IsNotFound(err) {
+			return s, err
+		}
+	}
+	current, err := c.current(ctx, r)
+	if err != nil {
+		return s, err
+	}
+	if current.Epoch != s.Epoch || (current.Handle == nil) != (s.Handle == nil) || (current.Handle != nil && current.Handle.UID != s.Handle.UID) {
+		return current, errors.New("pending stop allocation changed during observation")
+	}
+	if s.Epoch > 0 {
+		if err = c.deleteSecret(ctx, s); err != nil {
+			return s, err
+		}
+	}
+	s.Handle = nil
+	s.Identity = nil
+	s.Endpoint = ""
+	s.Phase = desiredState(r.Action)
+	s.CompletedOperation = r.OperationID
 	return c.physical(ctx, r, s)
 }

@@ -327,6 +327,28 @@ func currentCondition(obj *unstructured.Unstructured, kind string) bool {
 	return false
 }
 func (c *Control) ObserveWorkspace(ctx context.Context, h WorkspaceHandle) (WorkspaceObservation, error) {
+	return c.observeWorkspace(ctx, h, verifyWorkspaceStorageSpec)
+}
+
+// Stopping compute can retain an expanded PVC, but must not adopt a different
+// volume, storage class, or access mode under the original allocation identity.
+func (c *Control) ObserveWorkspaceForStop(ctx context.Context, h WorkspaceHandle, storage StorageSpec) (WorkspaceObservation, error) {
+	return c.observeWorkspace(ctx, h, func(pvc *unstructured.Unstructured, hash string) error {
+		size, _, _ := unstructured.NestedString(pvc.Object, "spec", "resources", "requests", "storage")
+		actual, actualErr := resource.ParseQuantity(size)
+		original, originalErr := resource.ParseQuantity(storage.Size)
+		if actualErr != nil || originalErr != nil || original.Sign() <= 0 || actual.Cmp(original) < 0 {
+			return errors.New("workspace PVC storage request is not a valid expansion")
+		}
+		pinned := pvc.DeepCopy()
+		if err := unstructured.SetNestedField(pinned.Object, storage.Size, "spec", "resources", "requests", "storage"); err != nil {
+			return err
+		}
+		return verifyWorkspaceStorageSpec(pinned, hash)
+	})
+}
+
+func (c *Control) observeWorkspace(ctx context.Context, h WorkspaceHandle, verifyStorage func(*unstructured.Unstructured, string) error) (WorkspaceObservation, error) {
 	obj, err := c.API.Resource(Sandboxes).Namespace(h.Namespace).Get(ctx, h.Sandbox, metav1.GetOptions{})
 	if err != nil {
 		return WorkspaceObservation{}, err
@@ -347,7 +369,7 @@ func (c *Control) ObserveWorkspace(ctx context.Context, h WorkspaceHandle) (Work
 	if pvc.GetUID() != h.PVCUID || pvc.GetDeletionTimestamp() != nil || len(pvc.GetOwnerReferences()) != 0 {
 		return WorkspaceObservation{}, errors.New("workspace storage identity changed")
 	}
-	if err = verifyWorkspaceStorageSpec(pvc, h.PVCSpecHash); err != nil {
+	if err = verifyStorage(pvc, h.PVCSpecHash); err != nil {
 		return WorkspaceObservation{}, err
 	}
 	h.Generation = obj.GetGeneration()
@@ -438,11 +460,21 @@ func (c *Control) DeleteWorkspaceSandbox(ctx context.Context, h WorkspaceHandle)
 	return err
 }
 func (c *Control) WaitWorkspaceMode(ctx context.Context, h WorkspaceHandle, mode WorkspaceMode) (WorkspaceObservation, error) {
+	return c.waitWorkspaceMode(ctx, h, mode, c.ObserveWorkspace)
+}
+
+func (c *Control) WaitWorkspaceModeForStop(ctx context.Context, h WorkspaceHandle, mode WorkspaceMode, storage StorageSpec) (WorkspaceObservation, error) {
+	return c.waitWorkspaceMode(ctx, h, mode, func(ctx context.Context, h WorkspaceHandle) (WorkspaceObservation, error) {
+		return c.ObserveWorkspaceForStop(ctx, h, storage)
+	})
+}
+
+func (c *Control) waitWorkspaceMode(ctx context.Context, h WorkspaceHandle, mode WorkspaceMode, observe func(context.Context, WorkspaceHandle) (WorkspaceObservation, error)) (WorkspaceObservation, error) {
 	if mode != WorkspaceRunning && mode != WorkspaceSuspended {
 		return WorkspaceObservation{}, errors.New("invalid workspace mode")
 	}
 	for {
-		o, err := c.ObserveWorkspace(ctx, h)
+		o, err := observe(ctx, h)
 		if err != nil {
 			return o, err
 		}

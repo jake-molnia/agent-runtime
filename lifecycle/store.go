@@ -22,6 +22,8 @@ import (
 
 const stateAnnotation = "agent-runtime/t3-lifecycle"
 
+var errWorkspaceProfileChanged = errors.New("workspace profile changed")
+
 var secrets = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 func digest(v any) string {
@@ -84,7 +86,7 @@ func (c *Controller) load(ctx context.Context, profile, workspace string) (State
 			return State{}, nil, errors.New("workspace pool changed")
 		}
 		if s.Request.Profile != profile || s.ProfileHash != digest(p) {
-			return State{}, nil, errors.New("workspace profile changed")
+			return State{}, nil, errWorkspaceProfileChanged
 		}
 	}
 	return s, obj, nil
@@ -220,13 +222,26 @@ func (c *Controller) ensureSecret(ctx context.Context, s State) error {
 	return nil
 }
 func (c *Controller) Access(ctx context.Context, profile, workspace string) (Access, error) {
+	return c.observeWorker(ctx, profile, workspace, c.Control.ObserveWorkspace)
+}
+
+// Stop admission refreshes the authenticated worker identity without granting
+// execution access to a workspace whose retained storage has expanded.
+func (c *Controller) observeForStop(ctx context.Context, profile, workspace string) (State, error) {
+	access, err := c.observeWorker(ctx, profile, workspace, func(ctx context.Context, h sandbox.WorkspaceHandle) (sandbox.WorkspaceObservation, error) {
+		return c.Control.ObserveWorkspaceForStop(ctx, h, c.Profiles[profile].Storage)
+	})
+	return access.State, err
+}
+
+func (c *Controller) observeWorker(ctx context.Context, profile, workspace string, observe func(context.Context, sandbox.WorkspaceHandle) (sandbox.WorkspaceObservation, error)) (Access, error) {
 	s, obj, err := c.load(ctx, profile, workspace)
 	if err != nil {
 		return Access{}, err
 	}
 	a := Access{State: s}
 	if s.Phase == "running" && s.Handle != nil {
-		observation, err := c.Control.ObserveWorkspace(ctx, *s.Handle)
+		observation, err := observe(ctx, *s.Handle)
 		if err != nil {
 			return Access{}, errors.New("current allocation could not be observed")
 		}
