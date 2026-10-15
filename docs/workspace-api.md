@@ -1,7 +1,7 @@
 # Workspace lifecycle API
 
 The lifecycle service manages retained workspaces and their sandbox compute.
-Requests use JSON and the controller's bearer token. Hatchet tasks, operation
+Requests use JSON and the controller's bearer token. Internal tasks, operation
 IDs, and lifecycle revisions are internal implementation details.
 
 This API is separate from the T3 execution worker API. Worker commands and event
@@ -42,7 +42,9 @@ an old shutdown request.
 Accepted transitions return `202` with the workspace resource and a `Location`
 header for the workspace. An already satisfied request returns `200`. A repeated
 request converges on the same desired state; internal task failures can be retried
-without inventing a new caller-side operation ID.
+without inventing a new caller-side operation ID. The controller reconciles
+accepted intents from persistent state using Kubernetes leases; it does not
+require Hatchet.
 
 Normal shutdown still requires the worker to prove it has no active operations or
 blocking callbacks. Changing the HTTP interface does not bypass that check.

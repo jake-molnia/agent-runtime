@@ -138,7 +138,7 @@ func (c *Controller) workspaceBinding(ctx context.Context, id string) (State, *u
 	if err := json.Unmarshal([]byte(found.GetAnnotations()[stateAnnotation]), &s); err != nil || s.Request.WorkspaceID != id {
 		return State{}, found, failure(409, "workspace_binding", "Workspace has no valid lifecycle binding", false)
 	}
-	if s.PoolID != "" && s.PoolID != c.PoolID {
+	if s.PoolID != nil && *s.PoolID != c.PoolID {
 		return State{}, nil, failure(409, "pool_mismatch", "Workspace is bound to a different pool", false)
 	}
 	p, ok := c.Profiles[s.Request.Profile]
@@ -182,7 +182,7 @@ func (c *Controller) registerWorkspace(ctx context.Context, id, pool, profile st
 	if s.Request.Profile != "" {
 		return s, false, nil
 	}
-	s = State{PoolID: c.PoolID, Request: Request{WorkspaceID: id, Profile: profile, OperationID: uuid.NewString(), Revision: 1, Action: ReleaseCompute}, ProfileHash: digest(c.Profiles[profile]), Phase: "released", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	s = State{PoolID: &c.PoolID, Request: Request{WorkspaceID: id, Profile: profile, OperationID: uuid.NewString(), Revision: 1, Action: ReleaseCompute}, ProfileHash: digest(c.Profiles[profile]), Phase: "released", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	s.CompletedOperation = s.Request.OperationID
 	if err = c.save(ctx, obj, s); err != nil {
 		return State{}, false, failure(409, "workspace_changed", "Workspace changed during registration; read and retry", true)
@@ -338,6 +338,7 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 			}
 			s.Request = next
 			s.TaskID = ""
+			s.Operation = nil
 			s.Error = nil
 			s.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			if s.Handle == nil && action != EnsureRunning {

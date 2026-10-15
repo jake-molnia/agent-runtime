@@ -74,7 +74,7 @@ type Worker interface {
 	Resume(context.Context, string, string, WorkerRequest) error
 }
 type State struct {
-	PoolID             string                   `json:"poolId,omitempty"`
+	PoolID             *string                  `json:"poolId,omitempty"`
 	Request            Request                  `json:"request"`
 	ProfileHash        string                   `json:"profileHash"`
 	Epoch              uint64                   `json:"epoch"`
@@ -86,6 +86,7 @@ type State struct {
 	CompletedOperation string                   `json:"completedOperation,omitempty"`
 	StartedAt          string                   `json:"startedAt,omitempty"`
 	Error              *WorkspaceError          `json:"error,omitempty"`
+	Operation          *Operation               `json:"operation,omitempty"`
 }
 type Access struct {
 	State State  `json:"state"`

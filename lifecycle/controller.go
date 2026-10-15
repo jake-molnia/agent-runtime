@@ -11,7 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Execute runs under Hatchet's shared per-workspace concurrency limit. Every
+// Execute runs under the runner's Kubernetes workspace lease. Every
 // external mutation also carries resource identity/version checks for retry safety.
 func (c *Controller) Execute(ctx context.Context, r Request) (result State, executionErr error) {
 	defer func() {

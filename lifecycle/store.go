@@ -80,7 +80,7 @@ func (c *Controller) load(ctx context.Context, profile, workspace string) (State
 		if err = json.Unmarshal([]byte(encoded), &s); err != nil {
 			return State{}, nil, errors.New("invalid persisted lifecycle state")
 		}
-		if s.PoolID != "" && s.PoolID != c.PoolID {
+		if s.PoolID != nil && *s.PoolID != c.PoolID {
 			return State{}, nil, errors.New("workspace pool changed")
 		}
 		if s.Request.Profile != profile || s.ProfileHash != digest(p) {
@@ -123,16 +123,23 @@ func (c *Controller) Admit(ctx context.Context, r Request) (State, error) {
 		if digest(s.Request) != digest(r) {
 			return s, errors.New("lifecycle revision reused with different input")
 		}
+		if s.PoolID == nil {
+			s.PoolID = &c.PoolID
+			if err = c.save(ctx, obj, s); err != nil {
+				return State{}, err
+			}
+		}
 		return s, nil
 	}
 	if s.Request.OperationID == r.OperationID {
 		return s, errors.New("operation ID reused with different revision")
 	}
 	s.Request = r
-	s.PoolID = c.PoolID
+	s.PoolID = &c.PoolID
 	s.TaskID = ""
 	s.Error = nil
 	s.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	s.Operation = nil
 	s.ProfileHash = digest(c.Profiles[r.Profile])
 	if s.Phase == "" {
 		s.Phase = "released"
@@ -149,6 +156,9 @@ func (c *Controller) SetTask(ctx context.Context, r Request, taskID string) erro
 	}
 	if digest(s.Request) != digest(r) {
 		return errors.New("operation superseded")
+	}
+	if s.TaskID == taskID {
+		return nil
 	}
 	s.TaskID = taskID
 	s.Error = nil
@@ -175,6 +185,8 @@ func (c *Controller) physical(ctx context.Context, r Request, next State) (State
 	next.Error = nil
 	next.Request = s.Request
 	next.TaskID = s.TaskID
+	next.Operation = s.Operation
+	next.PoolID = s.PoolID
 	if err = c.save(ctx, obj, next); err != nil {
 		return s, err
 	}
