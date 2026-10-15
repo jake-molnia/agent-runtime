@@ -18,7 +18,7 @@ import (
 // Run executes the runtime supervisor or Hatchet worker with the caller's shutdown context.
 func Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agent-runtime serve|worker|version|agents|workflows|run|runs|submit|reviews")
+		return errors.New("usage: agent-runtime serve|worker|t3-worker|t3-session|version|agents|workflows|run|runs|submit|reviews")
 	}
 	if args[0] == "reviews" {
 		return reviewsCommand(ctx, args[1:])
@@ -44,8 +44,12 @@ func Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "serve":
 		return serve(ctx)
+	case "t3-session":
+		return t3Session(ctx)
 	case "worker":
 		return worker(ctx)
+	case "t3-worker":
+		return t3Worker(ctx)
 	case "version":
 		fmt.Println("agent-runtime; upstream OpenCode V2; sandboxd v1.0.3")
 		return nil
@@ -84,8 +88,12 @@ func serve(ctx context.Context) error {
 		g.Go(func() error { return httpServer(ctx, "127.0.0.1:8082", handler) })
 	}
 	g.Go(func() error { return child(ctx, "sandboxd", "--root-dir="+root) })
+	desktopReady := make(chan struct{})
+	g.Go(func() error { return runDesktop(ctx, root, func([]string) { close(desktopReady) }) })
 	supervisor := &runtimeapi.Supervisor{Root: root, OpenCodeBinary: os.Getenv("OPENCODE_BINARY"), TailscaleSocket: socket}
-	g.Go(func() error { return httpServer(ctx, ":8081", supervisor.Handler(ctx)) })
+	g.Go(func() error {
+		return httpServer(ctx, ":8081", desktopHandler(ctx, desktopReady, supervisor.Handler(ctx)))
+	})
 	return g.Wait()
 }
 func httpServer(ctx context.Context, addr string, handler http.Handler) error {
@@ -114,11 +122,41 @@ func httpServer(ctx context.Context, addr string, handler http.Handler) error {
 }
 func child(ctx context.Context, binary string, args ...string) error {
 	cmd := exec.Command(binary, args...)
+	return runChild(ctx, cmd)
+}
+
+func runChild(ctx context.Context, cmd *exec.Cmd) error {
+	err := runChildUntilExit(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s exited", cmd.Path)
+}
+
+func runChildUntilExit(ctx context.Context, cmd *exec.Cmd) error {
+	return runChildUntilExitStarted(ctx, cmd, nil)
+}
+
+func runChildStarted(ctx context.Context, cmd *exec.Cmd, started func(int)) error {
+	if err := runChildUntilExitStarted(ctx, cmd, started); err != nil {
+		return err
+	}
+	return fmt.Errorf("%s exited", cmd.Path)
+}
+
+func runChildUntilExitStarted(ctx context.Context, cmd *exec.Cmd, started func(int)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Raw subprocess diagnostics can include credentials. Health endpoints and exit status are the public contract.
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("cannot start %s", binary)
+		return fmt.Errorf("cannot start %s: %w", cmd.Path, err)
 	}
+	if started != nil {
+		started(cmd.Process.Pid)
+	}
+	defer syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
@@ -131,7 +169,13 @@ func child(ctx context.Context, binary string, args ...string) error {
 			<-done
 		}
 		return ctx.Err()
-	case <-done:
-		return fmt.Errorf("%s exited", binary)
+	case err := <-done:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			return fmt.Errorf("%s exited: %w", cmd.Path, err)
+		}
+		return nil
 	}
 }

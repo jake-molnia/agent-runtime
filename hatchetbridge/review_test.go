@@ -144,6 +144,9 @@ func TestReviewRegistration(t *testing.T) {
 			t.Errorf("only configured agent stages may consume durable slots: %+v", task)
 		}
 	}
+	if durable[0].EvictionPolicy != nil {
+		t.Fatal("ingress parent must retain its cancellation guard on its dedicated worker tier")
+	}
 	raw, err := json.Marshal(declaration)
 	if err != nil {
 		t.Fatal(err)

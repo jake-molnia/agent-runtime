@@ -117,7 +117,8 @@ task returns the selected output value and its immutable message reference.
 `--wait` retrieves the result; `--text` prints a report or JSON string as text.
 
 Read [setup and ownership](docs/agent-automations.md),
-[defaults and overrides](definitions/README.md), and [workflow semantics](workflows/README.md).
+[defaults and overrides](definitions/README.md), [workflow semantics](workflows/README.md),
+and [sandbox desktop and tools](docs/desktop.md).
 GitHub review automation is an [optional trusted integration](docs/github-review.md);
 no GitHub identity, workflow or secret configuration is required for generic workers.
 The images include [pinned engineering skills](docs/sandbox-skills.md).

@@ -213,7 +213,7 @@ func worker(ctx context.Context) error {
 			}
 		})
 	}
-	g.Go(func() error { return health.monitor(ctx, workerName, client.Workers().List) })
+	g.Go(func() error { return health.monitor(ctx, []string{workerName}, client.Workers().List) })
 	g.Go(func() error { return httpServer(ctx, ":9091", mux) })
 	g.Go(func() error { defer stopWorker(); return worker.StartBlocking(ctx) })
 	return g.Wait()

@@ -1,6 +1,12 @@
 name: Container images
 
 on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish verified commit images without changing release channels
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -54,9 +60,14 @@ jobs:
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: arm64
+          image: mirror.gcr.io/tonistiigi/binfmt:latest
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -69,8 +80,8 @@ jobs:
           tags: |
             type=sha,format=long
             type=ref,event=pr
-            type=ref,event=tag
-            type=semver,pattern={{version}}
+            type=ref,event=tag,enable=${{ github.event_name == 'push' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'push' }}
       - name: Check the native container target
         env:
           TARGET: ${{ matrix.target }}
@@ -79,13 +90,22 @@ jobs:
           if [[ "$TARGET" == sandbox ]]; then
             docker buildx build --platform linux/amd64 --target verify-opencode .
             docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
-              test "$(id -u)" -eq 0
-              touch /root/agent-runtime-root-check
+              test "$(id -u)" -eq 1000
+              test "$HOME" = /home/node
+              test "${SANDBOX_CHROMIUM_SANDBOX:-enabled}" = enabled
+              touch "$HOME/agent-runtime-home-check" /workspace/agent-runtime-workspace-check
               git --version
               python3 --version
               opencode --version
               agent-runtime version
             '
+            docker run --rm --init --shm-size=1g --security-opt seccomp=unconfined \
+              --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
+                timeout 30s chromium --headless --disable-gpu --no-first-run --no-default-browser-check \
+                  --user-data-dir=/tmp/chromium-sandbox-check --dump-dom \
+                  "data:text/html,<title>browser-sandbox-check</title>" > /tmp/browser.html
+                grep -q "<title>browser-sandbox-check</title>" /tmp/browser.html
+              '
           else
             docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
               test "$(id -u)" -eq 1000
@@ -98,7 +118,7 @@ jobs:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' }}
+          push: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.target }}
@@ -106,7 +126,7 @@ jobs:
           provenance: mode=max
           sbom: true
       - name: Record published digest
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           DIGEST: ${{ steps.build.outputs.digest }}
