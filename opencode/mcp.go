@@ -113,11 +113,14 @@ func (client *Client) ReadyMCP(ctx context.Context, directory string, servers []
 			for _, entry := range values.Data {
 				if entry.Name == server {
 					state := mcpState(entry.Status.Status)
-					if state == "failed" || state == "needs_auth" || state == "disabled" {
-						code := 0
-						if match := mcpHTTPStatus.FindStringSubmatch(entry.Status.Error); len(match) == 2 {
-							code, _ = strconv.Atoi(match[1])
-						}
+					code := 0
+					if match := mcpHTTPStatus.FindStringSubmatch(entry.Status.Error); len(match) == 2 {
+						code, _ = strconv.Atoi(match[1])
+					}
+					// Connect restarts a failed asynchronous handshake. Match native transient HTTP errors;
+					// failures without an HTTP status still get this one bounded connection attempt.
+					recoverable := code == 0 || code == 408 || code == 429 || (code >= 500 && code != 501)
+					if state == "needs_auth" || state == "disabled" || (state == "failed" && !recoverable) {
 						return mcpFailure(server, "inventory", state, code, nil)
 					}
 					found = true

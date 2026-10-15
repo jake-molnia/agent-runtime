@@ -183,9 +183,6 @@ func ProfileRequestCapacity(ctx context.Context, api dynamic.Interface, name str
 	nodeAPI := api.Resource(schema.GroupVersionResource{Version: "v1", Resource: "nodes"})
 	var nodes []unstructured.Unstructured
 	nodeName := spec.NodeName
-	if nodeName == "" {
-		nodeName = spec.NodeSelector[corev1.LabelHostname]
-	}
 	if nodeName != "" {
 		node, err := nodeAPI.Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {

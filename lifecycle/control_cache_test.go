@@ -35,8 +35,8 @@ func TestControlKubernetesReadCost(t *testing.T) {
 	}
 	calls := len(api.Actions()) - before
 	t.Logf("five authenticated control reads made %d Kubernetes API actions", calls)
-	if calls != 10 {
-		t.Fatalf("want namespace discovery per read plus one fresh observation (10 actions), got %d", calls)
+	if calls != 15 {
+		t.Fatalf("want namespace discovery and shared-state checks per read plus a fresh observation (15 actions), got %d", calls)
 	}
 }
 
@@ -69,8 +69,8 @@ func TestControlCacheSeparatesAuthorizationAndRetiresAllocation(t *testing.T) {
 	if _, status := c.gatewayAccess(ctx, "default", workspace, "Bearer "+c.token(workspace, state.Epoch)); status != 200 {
 		t.Fatal(status)
 	}
-	if len(api.Actions()) != before {
-		t.Fatal("warm authenticated cache repeated lookups")
+	if len(api.Actions())-before != 3 {
+		t.Fatal("warm cache must perform one shared-state check for each gateway authorization")
 	}
 	if _, err := c.Access(ctx, "default", workspace); err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestControlCacheSeparatesAuthorizationAndRetiresAllocation(t *testing.T) {
 			t.Fatal("stale allocation returned", status, access.State.Phase)
 		}
 	}
-	if len(api.Actions())-before != 2 {
+	if len(api.Actions())-before != 4 {
 		t.Fatal("stopped states were cached")
 	}
 	if _, status := c.gatewayAccess(ctx, "default", workspace, "Bearer "+c.token(workspace, state.Epoch)); status != 401 {
@@ -169,7 +169,7 @@ func TestControlCacheCoalescesReadsAndInvalidatesInFlightAdmission(t *testing.T)
 	<-blocking.entered
 	close(blocking.proceed)
 	wg.Wait()
-	if blocking.probes.Load() != 1 || len(api.Actions())-before != 5 {
+	if blocking.probes.Load() != 1 || len(api.Actions())-before != 25 {
 		t.Fatalf("duplicate control probes=%d kube=%d", blocking.probes.Load(), len(api.Actions())-before)
 	}
 	c.invalidateGateway("default", state.Request.WorkspaceID)
@@ -226,7 +226,7 @@ func TestControlAndGatewayConcurrentReadAuthentication(t *testing.T) {
 	}
 	close(blocking.proceed)
 	wg.Wait()
-	if blocking.probes.Load() > 2 || len(api.Actions())-before > 12 {
+	if blocking.probes.Load() > 2 || len(api.Actions())-before > 52 {
 		t.Fatalf("duplicate mixed reads: probes%d kube%d", blocking.probes.Load(), len(api.Actions())-before)
 	}
 }
@@ -258,13 +258,13 @@ func TestGatewayConflictInvalidatesControlReadCache(t *testing.T) {
 	if w.Code != 409 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if len(api.Actions()) != before {
-		t.Fatal("gateway did not share control cache")
+	if len(api.Actions())-before != 1 {
+		t.Fatal("gateway must share the worker probe and check shared state")
 	}
 	if w := controlRead(c, state.Request.WorkspaceID, "Bearer control"); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
-	if len(api.Actions())-before != 6 {
+	if len(api.Actions())-before != 8 {
 		t.Fatal("worker conflict failed to expire control observation")
 	}
 }

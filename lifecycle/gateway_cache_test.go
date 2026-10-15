@@ -43,8 +43,8 @@ func TestGatewayKubernetesReadCost(t *testing.T) {
 		}
 	}
 	t.Logf("five requests made %d Kubernetes API actions", len(api.Actions())-start)
-	if len(api.Actions())-start != 6 {
-		t.Fatal("gateway repeated Kubernetes reads")
+	if len(api.Actions())-start != 11 {
+		t.Fatal("want one worker observation plus one shared-state check per request")
 	}
 }
 
@@ -66,8 +66,8 @@ func TestGatewayCacheRejectsWrongBearerAndExpires(t *testing.T) {
 	if _, status := c.gatewayAccess(ctx, "default", state.Request.WorkspaceID, "Bearer wrong"); status != 401 {
 		t.Fatal(status)
 	}
-	if len(api.Actions()) != actions {
-		t.Fatal("wrong bearer caused unnecessary lookup despite current cached allocation")
+	if len(api.Actions())-actions != 1 {
+		t.Fatal("wrong bearer must check shared state before rejecting a replacement token")
 	}
 	key := gatewayKey{"default", state.Request.WorkspaceID}
 	c.gatewayCache.mu.Lock()
@@ -78,7 +78,7 @@ func TestGatewayCacheRejectsWrongBearerAndExpires(t *testing.T) {
 	if _, status := c.gatewayAccess(ctx, "default", state.Request.WorkspaceID, token); status != 200 {
 		t.Fatal(status)
 	}
-	if len(api.Actions())-actions != 6 {
+	if len(api.Actions())-actions != 8 {
 		t.Fatalf("expiry lookup cost %d", len(api.Actions())-actions)
 	}
 	actions = len(api.Actions())
@@ -155,7 +155,7 @@ func TestGatewayCacheCoalescesConcurrentReadsAndBoundsEntries(t *testing.T) {
 	<-blocking.entered
 	close(blocking.proceed)
 	wg.Wait()
-	if blocking.probes.Load() != 1 || len(api.Actions())-before != 6 {
+	if blocking.probes.Load() != 1 || len(api.Actions())-before != 26 {
 		t.Fatalf("duplicate reads: probes=%d kube=%d", blocking.probes.Load(), len(api.Actions())-before)
 	}
 	c.gatewayCache.mu.Lock()
