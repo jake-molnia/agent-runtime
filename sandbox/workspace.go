@@ -140,9 +140,9 @@ func verifyWorkspaceObject(obj *unstructured.Unstructured, workspace, hash strin
 
 // EnsureWorkspaceStorage establishes retained storage without creating compute.
 func (c *Control) EnsureWorkspaceStorage(ctx context.Context, s WorkspaceSpec) (*unstructured.Unstructured, error) {
-	return c.workspaceStorage(ctx, s, true)
+	return c.workspaceStorage(ctx, s, true, verifyWorkspaceStorageSpec)
 }
-func (c *Control) workspaceStorage(ctx context.Context, s WorkspaceSpec, create bool) (*unstructured.Unstructured, error) {
+func (c *Control) workspaceStorage(ctx context.Context, s WorkspaceSpec, create bool, verifyStorage func(*unstructured.Unstructured, string) error) (*unstructured.Unstructured, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (c *Control) workspaceStorage(ctx context.Context, s WorkspaceSpec, create 
 	if err = verifyWorkspaceObject(pvc, s.WorkspaceID, pvcHash); err != nil {
 		return nil, err
 	}
-	if err = verifyWorkspaceStorageSpec(pvc, pvcHash); err != nil {
+	if err = verifyStorage(pvc, pvcHash); err != nil {
 		return nil, err
 	}
 	return pvc, nil
@@ -206,19 +206,28 @@ func verifyWorkspaceStorageSpec(pvc *unstructured.Unstructured, pinnedHash strin
 // EnsureWorkspace creates compute only after verifying its retained storage.
 // Callers serialize allocations and await old compute deletion before replacement.
 func (c *Control) EnsureWorkspace(ctx context.Context, s WorkspaceSpec) (WorkspaceHandle, error) {
-	return c.workspace(ctx, s, true)
+	return c.workspace(ctx, s, true, verifyWorkspaceStorageSpec)
 }
 
 // FindWorkspace recovers an existing allocation handle without creating storage or compute.
 // It verifies the same ownership, storage identity, and pinned spec as EnsureWorkspace.
 func (c *Control) FindWorkspace(ctx context.Context, s WorkspaceSpec) (WorkspaceHandle, error) {
-	return c.workspace(ctx, s, false)
+	return c.workspace(ctx, s, false, verifyWorkspaceStorageSpec)
 }
-func (c *Control) workspace(ctx context.Context, s WorkspaceSpec, create bool) (WorkspaceHandle, error) {
+
+// Recovery may use the existing Sandbox's pinned PVC UID to stop an allocation
+// whose handle was not saved. It never creates resources or grants execution.
+func (c *Control) FindWorkspaceForStop(ctx context.Context, s WorkspaceSpec) (WorkspaceHandle, error) {
+	return c.workspace(ctx, s, false, func(pvc *unstructured.Unstructured, hash string) error {
+		return verifyExpandedWorkspaceStorage(pvc, hash, s.Storage)
+	})
+}
+
+func (c *Control) workspace(ctx context.Context, s WorkspaceSpec, create bool, verifyStorage func(*unstructured.Unstructured, string) error) (WorkspaceHandle, error) {
 	if err := s.Validate(); err != nil {
 		return WorkspaceHandle{}, err
 	}
-	pvc, err := c.workspaceStorage(ctx, s, create)
+	pvc, err := c.workspaceStorage(ctx, s, create, verifyStorage)
 	if err != nil {
 		return WorkspaceHandle{}, err
 	}
@@ -327,33 +336,43 @@ func currentCondition(obj *unstructured.Unstructured, kind string) bool {
 	return false
 }
 func (c *Control) ObserveWorkspace(ctx context.Context, h WorkspaceHandle) (WorkspaceObservation, error) {
-	return c.observeWorkspace(ctx, h, verifyWorkspaceStorageSpec)
+	return c.observeWorkspace(ctx, h, verifyWorkspaceStorageSpec, checkWorkspaceSandbox)
 }
 
 // Stopping compute can retain an expanded PVC, but must not adopt a different
 // volume, storage class, or access mode under the original allocation identity.
 func (c *Control) ObserveWorkspaceForStop(ctx context.Context, h WorkspaceHandle, storage StorageSpec) (WorkspaceObservation, error) {
 	return c.observeWorkspace(ctx, h, func(pvc *unstructured.Unstructured, hash string) error {
-		size, _, _ := unstructured.NestedString(pvc.Object, "spec", "resources", "requests", "storage")
-		actual, actualErr := resource.ParseQuantity(size)
-		original, originalErr := resource.ParseQuantity(storage.Size)
-		if actualErr != nil || originalErr != nil || original.Sign() <= 0 || actual.Cmp(original) < 0 {
-			return errors.New("workspace PVC storage request is not a valid expansion")
+		return verifyExpandedWorkspaceStorage(pvc, hash, storage)
+	}, func(obj *unstructured.Unstructured, h WorkspaceHandle) error {
+		if obj.GetDeletionTimestamp() != nil {
+			obj = obj.DeepCopy()
+			obj.SetDeletionTimestamp(nil)
 		}
-		pinned := pvc.DeepCopy()
-		if err := unstructured.SetNestedField(pinned.Object, storage.Size, "spec", "resources", "requests", "storage"); err != nil {
-			return err
-		}
-		return verifyWorkspaceStorageSpec(pinned, hash)
+		return checkWorkspaceSandbox(obj, h)
 	})
 }
 
-func (c *Control) observeWorkspace(ctx context.Context, h WorkspaceHandle, verifyStorage func(*unstructured.Unstructured, string) error) (WorkspaceObservation, error) {
+func verifyExpandedWorkspaceStorage(pvc *unstructured.Unstructured, hash string, storage StorageSpec) error {
+	size, _, _ := unstructured.NestedString(pvc.Object, "spec", "resources", "requests", "storage")
+	actual, actualErr := resource.ParseQuantity(size)
+	original, originalErr := resource.ParseQuantity(storage.Size)
+	if actualErr != nil || originalErr != nil || original.Sign() <= 0 || actual.Cmp(original) < 0 {
+		return errors.New("workspace PVC storage request is not a valid expansion")
+	}
+	pinned := pvc.DeepCopy()
+	if err := unstructured.SetNestedField(pinned.Object, storage.Size, "spec", "resources", "requests", "storage"); err != nil {
+		return err
+	}
+	return verifyWorkspaceStorageSpec(pinned, hash)
+}
+
+func (c *Control) observeWorkspace(ctx context.Context, h WorkspaceHandle, verifyStorage func(*unstructured.Unstructured, string) error, verifySandbox func(*unstructured.Unstructured, WorkspaceHandle) error) (WorkspaceObservation, error) {
 	obj, err := c.API.Resource(Sandboxes).Namespace(h.Namespace).Get(ctx, h.Sandbox, metav1.GetOptions{})
 	if err != nil {
 		return WorkspaceObservation{}, err
 	}
-	if err = checkWorkspaceSandbox(obj, h); err != nil {
+	if err = verifySandbox(obj, h); err != nil {
 		return WorkspaceObservation{}, err
 	}
 	if obj.GetGeneration() < h.Generation {
@@ -400,7 +419,7 @@ func (c *Control) observeWorkspace(ctx context.Context, h WorkspaceHandle, verif
 			}
 		}
 	}
-	o.Ready = o.Mode == WorkspaceRunning && currentCondition(obj, "Ready") && count == 1 && podReady && host != ""
+	o.Ready = obj.GetDeletionTimestamp() == nil && o.Mode == WorkspaceRunning && currentCondition(obj, "Ready") && count == 1 && podReady && host != ""
 	o.Suspended = o.Mode == WorkspaceSuspended && currentCondition(obj, "Suspended") && count == 0
 	return o, nil
 }

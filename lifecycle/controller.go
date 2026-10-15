@@ -44,7 +44,22 @@ func (c *Controller) Execute(ctx context.Context, r Request) (result State, exec
 		if s.Handle == nil {
 			return s, errors.New("release missing resource identity")
 		}
-		if observation, observeErr := c.Control.ObserveWorkspace(ctx, *s.Handle); observeErr == nil {
+		observation, observeErr := c.Control.ObserveWorkspaceForStop(ctx, *s.Handle, c.Profiles[r.Profile].Storage)
+		if observeErr != nil {
+			if !apierrors.IsNotFound(observeErr) {
+				return s, observeErr
+			}
+			absent, err := c.allocationAbsent(ctx, s)
+			if err != nil {
+				return s, err
+			}
+			if !absent {
+				return s, observeErr
+			}
+		} else {
+			if !observation.Suspended {
+				return s, errors.New("releasing allocation is no longer suspended")
+			}
 			s.Handle = &observation.Handle
 		}
 		if err = c.Control.DeleteWorkspaceSandbox(ctx, *s.Handle); err != nil {
@@ -178,11 +193,7 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 		}
 	}
 	if s.Handle == nil {
-		if s.Phase == "released" && r.Action == ReleaseCompute {
-			s.CompletedOperation = r.OperationID
-			return c.physical(ctx, r, s)
-		}
-		return s, errors.New("no active allocation")
+		return c.completeMissingStop(ctx, r, s, errors.New("allocation still exists without a saved handle"))
 	}
 	expectedAllocation, expectedGeneration, expectedIncarnation := r.ExpectedAllocationID, r.ExpectedGeneration, r.ExpectedIncarnation
 	if r.ResolvePendingAllocation {
@@ -289,7 +300,7 @@ func (c *Controller) resolvePendingStop(ctx context.Context, r Request, s State)
 		if err != nil {
 			return s, err
 		}
-		handle, err := c.Control.FindWorkspace(ctx, spec)
+		handle, err := c.Control.FindWorkspaceForStop(ctx, spec)
 		if err == nil {
 			s.Handle = &handle
 			s, err = c.physical(ctx, r, s)
@@ -335,22 +346,12 @@ func (c *Controller) resolvePendingStop(ctx context.Context, r Request, s State)
 // Dependency lookup failures do not prove compute is gone. Only a direct read of
 // the saved allocation name may authorize cleanup, under the transition lease.
 func (c *Controller) completeMissingStop(ctx context.Context, r Request, s State, observationErr error) (State, error) {
-	if s.Epoch > 0 {
-		namespace := c.Profiles[r.Profile].Namespace
-		name := sandbox.WorkspaceSandboxName(r.WorkspaceID, strconv.FormatUint(s.Epoch, 10))
-		if s.Handle != nil && (s.Handle.Namespace != namespace || s.Handle.Sandbox != name || s.Handle.AllocationID != strconv.FormatUint(s.Epoch, 10)) {
-			return s, errors.New("pending stop allocation identity changed")
-		}
-		obj, err := c.Control.API.Resource(sandbox.Sandboxes).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err == nil {
-			if s.Handle != nil && obj.GetUID() != s.Handle.UID {
-				return s, errors.New("pending stop allocation was replaced")
-			}
-			return s, observationErr
-		}
-		if !apierrors.IsNotFound(err) {
-			return s, err
-		}
+	absent, err := c.allocationAbsent(ctx, s)
+	if err != nil {
+		return s, err
+	}
+	if !absent {
+		return s, observationErr
 	}
 	current, err := c.current(ctx, r)
 	if err != nil {
@@ -370,4 +371,35 @@ func (c *Controller) completeMissingStop(ctx context.Context, r Request, s State
 	s.Phase = desiredState(r.Action)
 	s.CompletedOperation = r.OperationID
 	return c.physical(ctx, r, s)
+}
+
+// A dependency lookup or an unreachable worker is not evidence of allocation
+// absence. Probe the exact saved Sandbox; a replacement UID remains protected.
+func (c *Controller) allocationAbsent(ctx context.Context, s State) (bool, error) {
+	if s.Epoch == 0 {
+		if s.Handle != nil {
+			return false, errors.New("allocation handle has no epoch")
+		}
+		return true, nil
+	}
+	profile, ok := c.Profiles[s.Request.Profile]
+	if !ok {
+		return false, errors.New("allocation profile unavailable")
+	}
+	allocation := strconv.FormatUint(s.Epoch, 10)
+	name := sandbox.WorkspaceSandboxName(s.Request.WorkspaceID, allocation)
+	if s.Handle != nil && (s.Handle.Namespace != profile.Namespace || s.Handle.Sandbox != name || s.Handle.WorkspaceID != s.Request.WorkspaceID || s.Handle.AllocationID != allocation) {
+		return false, errors.New("pending stop allocation identity changed")
+	}
+	obj, err := c.Control.API.Resource(sandbox.Sandboxes).Namespace(profile.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if s.Handle != nil && obj.GetUID() != s.Handle.UID {
+		return false, errors.New("pending stop allocation was replaced")
+	}
+	return false, nil
 }

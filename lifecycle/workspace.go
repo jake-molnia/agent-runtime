@@ -368,8 +368,11 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 			return
 		}
 		if action != EnsureRunning && s.Identity != nil && observedState == "unavailable" {
-			writeAPIError(w, 409, "worker_unavailable", "Cannot stop compute without an authenticated worker identity", true)
-			return
+			absent, absenceErr := c.allocationAbsent(r.Context(), s)
+			if absenceErr != nil || !absent {
+				writeAPIError(w, 409, "worker_unavailable", "Cannot stop compute without an authenticated worker identity or confirmed allocation absence", true)
+				return
+			}
 		}
 		needsFence := false
 		if action != EnsureRunning && s.Identity != nil {
