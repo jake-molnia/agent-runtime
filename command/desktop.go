@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -342,33 +343,7 @@ func desktopMCPReady(ctx context.Context, url string, required []string) error {
 		if value := res.Header.Get("Mcp-Session-Id"); value != "" {
 			session = value
 		}
-		var rpc struct {
-			Result json.RawMessage `json:"result"`
-			Error  json.RawMessage `json:"error"`
-		}
-		body := io.LimitReader(res.Body, 2<<20)
-		if strings.HasPrefix(res.Header.Get("Content-Type"), "text/event-stream") {
-			scanner := bufio.NewScanner(body)
-			scanner.Buffer(make([]byte, 4096), 2<<20)
-			for scanner.Scan() {
-				if data, ok := strings.CutPrefix(scanner.Text(), "data: "); ok {
-					err = json.Unmarshal([]byte(data), &rpc)
-					break
-				}
-			}
-			if scanner.Err() != nil {
-				return nil, scanner.Err()
-			}
-		} else {
-			err = json.NewDecoder(body).Decode(&rpc)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(rpc.Error) != 0 || len(rpc.Result) == 0 {
-			return nil, errors.New("MCP request failed")
-		}
-		return rpc.Result, nil
+		return desktopMCPResponse(io.LimitReader(res.Body, 2<<20), strings.HasPrefix(res.Header.Get("Content-Type"), "text/event-stream"), id)
 	}
 	init, err := call(1, "initialize", map[string]any{"protocolVersion": protocol, "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "agent-runtime", "version": "1"}})
 	if err != nil {
@@ -384,24 +359,102 @@ func desktopMCPReady(ctx context.Context, url string, required []string) error {
 	if _, err := call(0, "notifications/initialized", map[string]any{}); err != nil {
 		return err
 	}
-	data, err := call(2, "tools/list", map[string]any{})
-	if err != nil {
-		return err
-	}
-	var listing struct {
-		Tools []struct{ Name string } `json:"tools"`
-	}
-	if err := json.Unmarshal(data, &listing); err != nil {
-		return err
-	}
+	missing := make(map[string]bool, len(required))
 	for _, name := range required {
-		found := false
-		for _, tool := range listing.Tools {
-			found = found || tool.Name == name
+		missing[name] = true
+	}
+	cursors := make(map[string]bool)
+	params := map[string]any{}
+	for id := 2; ; id++ {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if !found {
-			return fmt.Errorf("MCP tool unavailable: %s", name)
+		data, err := call(id, "tools/list", params)
+		if err != nil {
+			return err
+		}
+		var listing struct {
+			Tools      []struct{ Name string } `json:"tools"`
+			NextCursor string                  `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(data, &listing); err != nil {
+			return err
+		}
+		for _, tool := range listing.Tools {
+			delete(missing, tool.Name)
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if listing.NextCursor == "" {
+			for _, name := range required {
+				if missing[name] {
+					return fmt.Errorf("MCP tool unavailable: %s", name)
+				}
+			}
+		}
+		if cursors[listing.NextCursor] {
+			return errors.New("MCP tools/list repeated a cursor")
+		}
+		cursors[listing.NextCursor] = true
+		params["cursor"] = listing.NextCursor
+	}
+}
+
+func desktopMCPResponse(body io.Reader, stream bool, id int) (json.RawMessage, error) {
+	decode := func(data []byte) (json.RawMessage, bool, error) {
+		var rpc struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Result json.RawMessage `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(data, &rpc); err != nil {
+			return nil, false, err
+		}
+		if rpc.Method != "" || string(rpc.ID) != strconv.Itoa(id) {
+			return nil, false, nil
+		}
+		if len(rpc.Error) != 0 || len(rpc.Result) == 0 {
+			return nil, true, errors.New("MCP request failed")
+		}
+		return rpc.Result, true, nil
+	}
+	if !stream {
+		var data json.RawMessage
+		if err := json.NewDecoder(body).Decode(&data); err != nil {
+			return nil, err
+		}
+		result, matched, err := decode(data)
+		if err != nil || matched {
+			return result, err
+		}
+		return nil, errors.New("MCP response ID did not match request")
+	}
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 4096), 2<<20)
+	var event strings.Builder
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if event.Len() == 0 {
+				continue
+			}
+			result, matched, err := decode([]byte(event.String()))
+			event.Reset()
+			if err != nil || matched {
+				return result, err
+			}
+			continue
+		}
+		field, value, _ := strings.Cut(line, ":")
+		if field == "data" {
+			event.WriteString(strings.TrimPrefix(value, " "))
+			event.WriteByte('\n')
 		}
 	}
-	return nil
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("MCP stream ended before matching response")
 }

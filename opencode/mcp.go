@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var mcpName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)
+var mcpName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 var mcpHTTPStatus = regexp.MustCompile(`(?i)(?:HTTP\s+|status(?:\s+code)?[\s:=]*(?:\()?)([1-5][0-9]{2})(?:\b|\))`)
 
 type MCPReadinessError struct {
@@ -27,6 +27,8 @@ func (e *MCPReadinessError) Unwrap() error { return e.cause }
 func mcpFailure(server, stage, state string, status int, cause error) error {
 	if !mcpName.MatchString(server) {
 		server = "invalid"
+	} else if len(server) > 128 {
+		server = server[:128] + "..."
 	}
 	return &MCPReadinessError{server: server, stage: stage, state: state, httpStatus: status, cause: cause}
 }

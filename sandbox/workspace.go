@@ -169,15 +169,38 @@ func (c *Control) workspaceStorage(ctx context.Context, s WorkspaceSpec, create 
 	if err = verifyWorkspaceObject(pvc, s.WorkspaceID, pvcHash); err != nil {
 		return nil, err
 	}
-	// Check the requested subset, permitting Kubernetes binding/default fields.
-	for _, path := range [][]string{{"spec", "storageClassName"}, {"spec", "accessModes"}, {"spec", "resources", "requests", "storage"}} {
-		got, _, _ := unstructured.NestedFieldNoCopy(pvc.Object, path...)
-		want, _, _ := unstructured.NestedFieldNoCopy(map[string]any{"spec": pvcSpec}, path...)
-		if workspaceHash(got) != workspaceHash(want) {
-			return nil, errors.New("workspace PVC spec drift")
-		}
+	if err = verifyWorkspaceStorageSpec(pvc, pvcHash); err != nil {
+		return nil, err
 	}
 	return pvc, nil
+}
+
+// Only configured storage fields participate in the pin. Binding, defaults, and
+// reported capacity are controlled by Kubernetes and do not change the request.
+func verifyWorkspaceStorageSpec(pvc *unstructured.Unstructured, pinnedHash string) error {
+	storageClass, _, classErr := unstructured.NestedString(pvc.Object, "spec", "storageClassName")
+	modes, _, modesErr := unstructured.NestedStringSlice(pvc.Object, "spec", "accessModes")
+	size, _, sizeErr := unstructured.NestedString(pvc.Object, "spec", "resources", "requests", "storage")
+	quantity, quantityErr := resource.ParseQuantity(size)
+	if classErr != nil || modesErr != nil || sizeErr != nil || quantityErr != nil || quantity.Sign() <= 0 {
+		return errors.New("workspace PVC spec drift")
+	}
+	matches := func(size string) bool {
+		requested := map[string]any{"storageClassName": storageClass, "accessModes": modes, "resources": map[string]any{"requests": map[string]any{"storage": size}}}
+		return workspaceHash(requested) == pinnedHash
+	}
+	if matches(size) {
+		return nil
+	}
+	// Older handles pin Quantity.String(), which retains the quantity's format.
+	// Try each canonical Kubernetes format so equal byte counts retain their pin.
+	for _, format := range []resource.Format{resource.BinarySI, resource.DecimalSI, resource.DecimalExponent} {
+		canonical := resource.NewDecimalQuantity(*quantity.AsDec(), format)
+		if matches(canonical.String()) {
+			return nil
+		}
+	}
+	return errors.New("workspace PVC spec drift")
 }
 
 // EnsureWorkspace creates compute only after verifying its retained storage.
@@ -323,6 +346,9 @@ func (c *Control) ObserveWorkspace(ctx context.Context, h WorkspaceHandle) (Work
 	}
 	if pvc.GetUID() != h.PVCUID || pvc.GetDeletionTimestamp() != nil || len(pvc.GetOwnerReferences()) != 0 {
 		return WorkspaceObservation{}, errors.New("workspace storage identity changed")
+	}
+	if err = verifyWorkspaceStorageSpec(pvc, h.PVCSpecHash); err != nil {
+		return WorkspaceObservation{}, err
 	}
 	h.Generation = obj.GetGeneration()
 	h.ResourceVersion = obj.GetResourceVersion()
