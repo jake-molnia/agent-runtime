@@ -127,7 +127,7 @@ func (c *Controller) Admit(ctx context.Context, r Request) (State, error) {
 		}
 		return s, nil
 	}
-	if s.Request.OperationID == r.OperationID {
+	if s.Request.OperationID == r.OperationID || s.CompletedOperation == r.OperationID {
 		return s, errors.New("operation ID reused with different revision")
 	}
 	s.Request = r
@@ -204,7 +204,7 @@ func (c *Controller) ensureSecret(ctx context.Context, s State) error {
 	return nil
 }
 func (c *Controller) Access(ctx context.Context, profile, workspace string) (Access, error) {
-	s, _, err := c.load(ctx, profile, workspace)
+	s, obj, err := c.load(ctx, profile, workspace)
 	if err != nil {
 		return Access{}, err
 	}
@@ -232,12 +232,19 @@ func (c *Controller) Access(ctx context.Context, profile, workspace string) (Acc
 			s.Identity = &identity
 			s.Handle = &observation.Handle
 			s.Endpoint = address
-			s, err = c.physical(ctx, s.Request, s)
+			// Fence the observation with the PVC version read before probing the worker.
+			// Reloading here would let a delayed probe overwrite a newer transition.
+			if err = c.save(ctx, obj, s); err != nil {
+				return Access{}, err
+			}
+		} else {
+			current, latest, err := c.load(ctx, profile, workspace)
 			if err != nil {
 				return Access{}, err
 			}
-		} else if _, err := c.current(ctx, s.Request); err != nil {
-			return Access{}, err
+			if latest.GetUID() != obj.GetUID() || latest.GetResourceVersion() != obj.GetResourceVersion() || digest(current) != digest(s) {
+				return Access{}, errors.New("workspace changed during observation")
+			}
 		}
 		a.State = s
 		a.Token = token

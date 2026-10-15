@@ -68,9 +68,27 @@ func (c *Controller) controlAccess(ctx context.Context, profile, workspace strin
 func (c *Controller) cachedAccess(ctx context.Context, profile, workspace, authorization string, control bool) (Access, int) {
 	for attempt := 0; attempt < 2; attempt++ {
 		access, status := c.cachedAccessOnce(ctx, profile, workspace, authorization, control)
-		if status != 0 {
+		if status == 0 {
+			continue
+		}
+		if status != http.StatusOK {
 			return access, status
 		}
+		// Worker probes can be cached; authorization must observe shared lifecycle
+		// state even when another replica owns the transition or the in-flight read.
+		current, _, err := c.load(ctx, profile, workspace)
+		if err != nil {
+			c.invalidateGateway(profile, workspace)
+			return Access{}, http.StatusServiceUnavailable
+		}
+		if digest(current) != digest(access.State) {
+			c.invalidateGateway(profile, workspace)
+			continue
+		}
+		if !control && (current.Request.Action != EnsureRunning || !bearerMatches(authorization, access.Token)) {
+			return Access{}, http.StatusUnauthorized
+		}
+		return access, http.StatusOK
 	}
 	return Access{}, http.StatusServiceUnavailable
 }
@@ -88,9 +106,6 @@ func (c *Controller) cachedAccessOnce(ctx context.Context, profile, workspace, a
 	}
 	if entry, ok := cache.entries[key]; ok {
 		cache.mu.Unlock()
-		if !control && !bearerMatches(authorization, entry.access.Token) {
-			return Access{}, http.StatusUnauthorized
-		}
 		return entry.access, http.StatusOK
 	}
 	if flight, ok := cache.flights[flightKey]; ok {
@@ -151,7 +166,7 @@ func (c *Controller) cachedAccessOnce(ctx context.Context, profile, workspace, a
 
 func (c *Controller) readGatewayAccess(ctx context.Context, profile, workspace, authorization string) (Access, int) {
 	state, _, err := c.load(ctx, profile, workspace)
-	if err != nil || state.Phase != "running" || state.Handle == nil || !bearerMatches(authorization, c.token(workspace, state.Epoch)) {
+	if err != nil || state.Request.Action != EnsureRunning || state.Phase != "running" || state.Handle == nil || !bearerMatches(authorization, c.token(workspace, state.Epoch)) {
 		return Access{}, http.StatusUnauthorized
 	}
 	access, err := c.Access(ctx, profile, workspace)

@@ -84,6 +84,20 @@ func TestRequestCapacityIncludesInitAndRuntimeOverhead(t *testing.T) {
 		t.Fatalf("init/overhead fit: %+v %v", got, err)
 	}
 }
+
+func TestRequestCapacityHostnameSelectorUsesNodeLabels(t *testing.T) {
+	node := capacityNode("node-object", "2", "4Gi")
+	node.SetLabels(map[string]string{corev1.LabelHostname: "worker-host", "execution": "yes"})
+	other := capacityNode("different-pool", "20", "40Gi")
+	other.SetLabels(map[string]string{corev1.LabelHostname: "worker-host", "execution": "no"})
+	profile := capacityProfile()
+	profile.PodTemplate.Spec.NodeSelector[corev1.LabelHostname] = "worker-host"
+	api := capacityAPI(node, other, capacityPod("busy", "node-object", "1", "1Gi"))
+	got, err := ProfileRequestCapacity(context.Background(), api, "profile", profile)
+	if err != nil || got == nil || got.AvailableSlots != 1 {
+		t.Fatalf("hostname label and complete selector must determine capacity: %+v %v", got, err)
+	}
+}
 func TestRequestCapacityUnknownForIncompleteInventoryOrUnsupportedProfile(t *testing.T) {
 	p := capacityProfile()
 	api := capacityAPI(capacityNode("a", "2", "4Gi"))
