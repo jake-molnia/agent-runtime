@@ -157,7 +157,7 @@ func (c *Controller) SetTask(ctx context.Context, r Request, taskID string) erro
 	if digest(s.Request) != digest(r) {
 		return errors.New("operation superseded")
 	}
-	if s.TaskID == taskID {
+	if s.TaskID == taskID && s.Error == nil {
 		return nil
 	}
 	s.TaskID = taskID

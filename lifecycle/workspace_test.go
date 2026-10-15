@@ -348,3 +348,49 @@ func TestUnscopedControllerUsesLocalPublicPoolWithoutChangingWorkerCredentials(t
 		t.Fatal("empty public pool accepted", w.Code, w.Body)
 	}
 }
+
+func TestWorkspaceAPIRetriesWithPersistentRunner(t *testing.T) {
+	c, _, _ := fixture(t)
+	c.PoolID = "test-pool"
+	runner := NewRunner(c)
+	h := Handler(c, runner, "control")
+	w, registered := workspaceCall(t, h, "PUT", workspacePath(), `{"pool":"test-pool","profile":"default"}`, "")
+	if w.Code != 201 {
+		t.Fatal(w.Code, w.Body)
+	}
+	w, pending := setTestState(t, h, "running", registered)
+	if w.Code != 202 {
+		t.Fatal(w.Code, w.Body)
+	}
+	state, _, err := c.load(t.Context(), "default", testWorkspace)
+	if err != nil || state.Operation == nil || state.Operation.Status != "QUEUED" {
+		t.Fatal(state, err)
+	}
+	_, err = runner.changeOperation(t.Context(), state.Request, func(s *State) bool {
+		s.Operation.Status = "FAILED"
+		s.Error = &WorkspaceError{Code: "lifecycle_failed", Message: "Workspace transition failed", Retryable: true}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, retried := setTestState(t, h, "running", pending)
+	if w.Code != 202 || retried.Error != nil || retried.Version != pending.Version {
+		t.Fatal(w.Code, w.Body)
+	}
+	state, _, err = c.load(t.Context(), "default", testWorkspace)
+	if err != nil || state.Operation.Status != "QUEUED" {
+		t.Fatal(state, err)
+	}
+	requests, err := runner.pending(t.Context())
+	if err != nil || len(requests) != 1 {
+		t.Fatal(requests, err)
+	}
+	if _, err = c.Execute(t.Context(), requests[0]); err != nil {
+		t.Fatal(err)
+	}
+	_, ready := workspaceCall(t, h, "GET", workspacePath(), "", "")
+	if ready.State != "running" || ready.Execution == nil {
+		t.Fatal(ready)
+	}
+}
