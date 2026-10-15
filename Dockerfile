@@ -56,7 +56,8 @@ FROM node:26.9.0-trixie-slim@sha256:65f816afd401c1c4de3293acc46dce115398152af4bd
 COPY desktop/install-tools.sh /tmp/install-desktop-tools.sh
 RUN sh /tmp/install-desktop-tools.sh \
     && rm /tmp/install-desktop-tools.sh \
-    && mkdir -p /workspace
+    && mkdir -p /workspace \
+    && chown node:node /workspace
 COPY --from=opencode /out/opencode /usr/local/bin/opencode
 COPY --from=build /out/agent-runtime /out/sandboxd /usr/local/bin/
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/
@@ -67,11 +68,11 @@ COPY desktop/chromium-policy.json /etc/chromium/policies/managed/agent-runtime.j
 COPY --from=skills /opt/agent-skill-bundles /opt/agent-skill-bundles
 COPY --from=skills /opt/agent-skills /opt/agent-skills
 COPY harnesses/opencode.json /etc/agent-runtime/harnesses/opencode.json
-ENV HOME=/root USER=root LOGNAME=root SANDBOX_ROOT=/workspace DISPLAY=:99 \
-    PATH="/opt/markitdown/bin:${PATH}" SANDBOX_CHROMIUM_SANDBOX=disabled \
+ENV HOME=/home/node USER=node LOGNAME=node SANDBOX_ROOT=/workspace DISPLAY=:99 \
+    PATH="/opt/markitdown/bin:${PATH}" \
     OPENCODE_CONFIG=/etc/agent-runtime/harnesses/opencode.json \
     OPENCODE_DISABLE_PROJECT_CONFIG=1
-USER 0:0
+USER 1000:1000
 WORKDIR /workspace
 EXPOSE 8080 8081 4096 9090
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "agent-runtime"]

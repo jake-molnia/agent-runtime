@@ -90,13 +90,22 @@ jobs:
           if [[ "$TARGET" == sandbox ]]; then
             docker buildx build --platform linux/amd64 --target verify-opencode .
             docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
-              test "$(id -u)" -eq 0
-              touch /root/agent-runtime-root-check
+              test "$(id -u)" -eq 1000
+              test "$HOME" = /home/node
+              test "${SANDBOX_CHROMIUM_SANDBOX:-enabled}" = enabled
+              touch "$HOME/agent-runtime-home-check" /workspace/agent-runtime-workspace-check
               git --version
               python3 --version
               opencode --version
               agent-runtime version
             '
+            docker run --rm --init --shm-size=1g --security-opt seccomp=unconfined \
+              --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
+                timeout 30s chromium --headless --disable-gpu --no-first-run --no-default-browser-check \
+                  --user-data-dir=/tmp/chromium-sandbox-check --dump-dom \
+                  "data:text/html,<title>browser-sandbox-check</title>" > /tmp/browser.html
+                grep -q "<title>browser-sandbox-check</title>" /tmp/browser.html
+              '
           else
             docker run --rm --entrypoint /bin/sh "agent-runtime-check:$TARGET" -ec '
               test "$(id -u)" -eq 1000
