@@ -162,6 +162,12 @@ func (c *Controller) registerWorkspace(ctx context.Context, id, pool, profile st
 		if s.Request.Profile != profile {
 			return State{}, false, failure(409, "binding_conflict", "Workspace profile is immutable; use an explicit migration", false)
 		}
+		if s.PoolID == nil {
+			s.PoolID = &c.PoolID
+			if err = c.save(ctx, existing, s); err != nil {
+				return State{}, false, failure(409, "workspace_changed", "Workspace changed during registration; read and retry", true)
+			}
+		}
 		return s, false, nil
 	}
 	var f *workspaceFailure
@@ -337,6 +343,7 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 				next.ExpectedIncarnation = s.Identity.Incarnation
 			}
 			s.Request = next
+			s.PoolID = &c.PoolID
 			s.TaskID = ""
 			s.Operation = nil
 			s.Error = nil

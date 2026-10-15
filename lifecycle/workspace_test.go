@@ -394,3 +394,42 @@ func TestWorkspaceAPIRetriesWithPersistentRunner(t *testing.T) {
 		t.Fatal(ready)
 	}
 }
+
+func TestWorkspaceAPIAdoptsLegacyBindingForNativeRunner(t *testing.T) {
+	for _, register := range []bool{false, true} {
+		t.Run(strconv.FormatBool(register), func(t *testing.T) {
+			c, _, _ := fixture(t)
+			c.PoolID = "test-pool"
+			state := run(t, c, request(1, EnsureRunning))
+			s, obj, err := c.load(t.Context(), "default", testWorkspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.PoolID = nil
+			if err = c.save(t.Context(), obj, s); err != nil {
+				t.Fatal(err)
+			}
+			runner := NewRunner(c)
+			h := Handler(c, runner, "control")
+			if register {
+				w, _ := workspaceCall(t, h, "PUT", workspacePath(), `{"pool":"test-pool","profile":"default"}`, "")
+				if w.Code != 200 {
+					t.Fatal(w.Code, w.Body)
+				}
+				stored, _, err := c.load(t.Context(), "default", testWorkspace)
+				if err != nil || stored.PoolID == nil || *stored.PoolID != c.PoolID {
+					t.Fatal(stored, err)
+				}
+			}
+			_, resource := workspaceCall(t, h, "GET", workspacePath(), "", "")
+			w, _ := setTestState(t, h, "suspended", resource)
+			if w.Code != 202 {
+				t.Fatal(w.Code, w.Body)
+			}
+			pending, err := runner.pending(t.Context())
+			if err != nil || len(pending) != 1 || pending[0].WorkspaceID != state.Request.WorkspaceID {
+				t.Fatal(pending, err)
+			}
+		})
+	}
+}
