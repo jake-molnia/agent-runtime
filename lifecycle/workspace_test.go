@@ -327,7 +327,7 @@ func TestWorkspaceMigrationViewDoesNotExposeExecutionCredentials(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &fields); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != 200 || len(fields) != 5 || fields["profile"] != "default" || fields["state"] != "released" {
+	if w.Code != 200 || len(fields) != 6 || fields["bindingGeneration"] != float64(1) || fields["profile"] != "default" || fields["state"] != "released" {
 		t.Fatal(w.Code, w.Body)
 	}
 }

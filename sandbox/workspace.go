@@ -140,6 +140,9 @@ func verifyWorkspaceObject(obj *unstructured.Unstructured, workspace, hash strin
 
 // EnsureWorkspaceStorage establishes retained storage without creating compute.
 func (c *Control) EnsureWorkspaceStorage(ctx context.Context, s WorkspaceSpec) (*unstructured.Unstructured, error) {
+	return c.workspaceStorage(ctx, s, true)
+}
+func (c *Control) workspaceStorage(ctx context.Context, s WorkspaceSpec, create bool) (*unstructured.Unstructured, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -152,8 +155,12 @@ func (c *Control) EnsureWorkspaceStorage(ctx context.Context, s WorkspaceSpec) (
 	pvcHash := workspaceHash(pvcSpec)
 	pvcName := WorkspacePVCName(s.WorkspaceID)
 	pvcAPI := c.API.Resource(WorkspacePVCs).Namespace(s.Namespace)
-	pvc, err := pvcAPI.Create(ctx, ownedWorkspaceObject("PersistentVolumeClaim", pvcName, s.Namespace, s.WorkspaceID, pvcHash, pvcSpec), metav1.CreateOptions{})
-	if apierrors.IsAlreadyExists(err) {
+	var pvc *unstructured.Unstructured
+	var err error
+	if create {
+		pvc, err = pvcAPI.Create(ctx, ownedWorkspaceObject("PersistentVolumeClaim", pvcName, s.Namespace, s.WorkspaceID, pvcHash, pvcSpec), metav1.CreateOptions{})
+	}
+	if !create || apierrors.IsAlreadyExists(err) {
 		pvc, err = pvcAPI.Get(ctx, pvcName, metav1.GetOptions{})
 	}
 	if err != nil {
@@ -176,10 +183,19 @@ func (c *Control) EnsureWorkspaceStorage(ctx context.Context, s WorkspaceSpec) (
 // EnsureWorkspace creates compute only after verifying its retained storage.
 // Callers serialize allocations and await old compute deletion before replacement.
 func (c *Control) EnsureWorkspace(ctx context.Context, s WorkspaceSpec) (WorkspaceHandle, error) {
+	return c.workspace(ctx, s, true)
+}
+
+// FindWorkspace recovers an existing allocation handle without creating storage or compute.
+// It verifies the same ownership, storage identity, and pinned spec as EnsureWorkspace.
+func (c *Control) FindWorkspace(ctx context.Context, s WorkspaceSpec) (WorkspaceHandle, error) {
+	return c.workspace(ctx, s, false)
+}
+func (c *Control) workspace(ctx context.Context, s WorkspaceSpec, create bool) (WorkspaceHandle, error) {
 	if err := s.Validate(); err != nil {
 		return WorkspaceHandle{}, err
 	}
-	pvc, err := c.EnsureWorkspaceStorage(ctx, s)
+	pvc, err := c.workspaceStorage(ctx, s, create)
 	if err != nil {
 		return WorkspaceHandle{}, err
 	}
@@ -203,8 +219,11 @@ func (c *Control) EnsureWorkspace(ctx context.Context, s WorkspaceSpec) (Workspa
 	annotations["agent-runtime/requested-spec"] = string(requested)
 	obj.SetAnnotations(annotations)
 	api := c.API.Resource(Sandboxes).Namespace(s.Namespace)
-	sb, err := api.Create(ctx, obj, metav1.CreateOptions{})
-	if apierrors.IsAlreadyExists(err) {
+	var sb *unstructured.Unstructured
+	if create {
+		sb, err = api.Create(ctx, obj, metav1.CreateOptions{})
+	}
+	if !create || apierrors.IsAlreadyExists(err) {
 		sb, err = api.Get(ctx, name, metav1.GetOptions{})
 	}
 	if err != nil {

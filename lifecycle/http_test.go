@@ -71,7 +71,7 @@ func TestProfileMigrationHTTPRequiresManagementAuthAndStrictJSON(t *testing.T) {
 	s := run(t, c, request(1, EnsureRunning))
 	s = run(t, c, stopRequest(2, ReleaseCompute, s))
 	c.Profiles["next"] = c.Profiles["default"]
-	migration := ProfileMigration{WorkspaceID: s.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: s.ProfileHash, ExpectedRevision: s.Request.Revision, ExpectedEpoch: s.Epoch}
+	migration := ProfileMigration{OperationID: "test-migration", ExpectedBindingGeneration: new(uint64), WorkspaceID: s.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: s.ProfileHash, ExpectedRevision: s.Request.Revision, ExpectedEpoch: s.Epoch}
 	body, _ := json.Marshal(migration)
 	h := Handler(c, &fakeTasks{}, "internal-key")
 	for _, test := range []struct {

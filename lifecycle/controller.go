@@ -170,6 +170,13 @@ func (c *Controller) ensureRunning(ctx context.Context, r Request, s State) (Sta
 	return c.physical(ctx, r, s)
 }
 func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error) {
+	if r.ResolvePendingAllocation {
+		var err error
+		s, err = c.resolvePendingStop(ctx, r, s)
+		if err != nil || s.CompletedOperation == r.OperationID {
+			return s, err
+		}
+	}
 	if s.Handle == nil {
 		if s.Phase == "released" && r.Action == ReleaseCompute {
 			s.CompletedOperation = r.OperationID
@@ -177,7 +184,14 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 		}
 		return s, errors.New("no active allocation")
 	}
-	if s.Handle.AllocationID != r.ExpectedAllocationID || s.Epoch != r.ExpectedGeneration || s.Identity == nil || s.Identity.Incarnation != r.ExpectedIncarnation {
+	expectedAllocation, expectedGeneration, expectedIncarnation := r.ExpectedAllocationID, r.ExpectedGeneration, r.ExpectedIncarnation
+	if r.ResolvePendingAllocation {
+		if s.PendingStopIdentity == nil {
+			return s, errors.New("pending stop has no authenticated target")
+		}
+		expectedAllocation, expectedGeneration, expectedIncarnation = s.PendingStopIdentity.AllocationID, s.PendingStopIdentity.Generation, s.PendingStopIdentity.Incarnation
+	}
+	if s.Handle.AllocationID != expectedAllocation || s.Epoch != expectedGeneration || s.Identity == nil || s.Identity.Incarnation != expectedIncarnation {
 		return s, errors.New("destructive request targets stale execution identity")
 	}
 	observation, err := c.Control.ObserveWorkspace(ctx, *s.Handle)
@@ -261,5 +275,65 @@ func (c *Controller) stop(ctx context.Context, r Request, s State) (State, error
 		s.Endpoint = ""
 	}
 	s.CompletedOperation = r.OperationID
+	return c.physical(ctx, r, s)
+}
+
+// The runner holds the workspace lease, so an earlier start has finished or lost
+// its execution deadline before this discovers an uncommitted allocation handle.
+func (c *Controller) resolvePendingStop(ctx context.Context, r Request, s State) (State, error) {
+	if s.Handle == nil && s.Epoch > 0 {
+		spec, err := c.spec(r.Profile, r.WorkspaceID, s.Epoch)
+		if err != nil {
+			return s, err
+		}
+		handle, err := c.Control.FindWorkspace(ctx, spec)
+		if err == nil {
+			s.Handle = &handle
+			s, err = c.physical(ctx, r, s)
+			if err != nil {
+				return s, err
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return s, err
+		}
+	}
+	if s.Handle == nil {
+		if _, err := c.current(ctx, r); err != nil {
+			return s, err
+		}
+		if s.Epoch > 0 {
+			if err := c.deleteSecret(ctx, s); err != nil {
+				return s, err
+			}
+		}
+		s.Identity = nil
+		s.Endpoint = ""
+		s.Phase = desiredState(r.Action)
+		s.CompletedOperation = r.OperationID
+		return c.physical(ctx, r, s)
+	}
+	if s.PendingStopIdentity != nil {
+		return s, nil
+	}
+	if s.Identity == nil {
+		observation, err := c.Control.WaitWorkspaceMode(ctx, *s.Handle, sandbox.WorkspaceRunning)
+		if err != nil {
+			return s, err
+		}
+		address := endpoint(observation.Host, c.Profiles[r.Profile].Port)
+		identity, err := c.Worker.Identity(ctx, address, c.token(r.WorkspaceID, s.Epoch))
+		if err != nil {
+			return s, err
+		}
+		if identity.WorkspaceID != r.WorkspaceID || identity.AllocationID != s.Handle.AllocationID || identity.Generation != s.Epoch || identity.Incarnation == "" || identity.ProtocolVersion != 1 || identity.PodUID != string(observation.PodUID) {
+			return s, errors.New("pending allocation worker identity mismatch")
+		}
+		s.Identity = &identity
+		s.Endpoint = address
+		s.Handle = &observation.Handle
+		s.Phase = "running"
+	}
+	target := *s.Identity
+	s.PendingStopIdentity = &target
 	return c.physical(ctx, r, s)
 }

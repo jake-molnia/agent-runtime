@@ -18,14 +18,15 @@ const (
 )
 
 type Request struct {
-	WorkspaceID          string `json:"workspaceId"`
-	OperationID          string `json:"operationId"`
-	Revision             uint64 `json:"revision"`
-	Action               Action `json:"action"`
-	Profile              string `json:"profile"`
-	ExpectedAllocationID string `json:"expectedAllocationId,omitempty"`
-	ExpectedGeneration   uint64 `json:"expectedGeneration,omitempty"`
-	ExpectedIncarnation  string `json:"expectedIncarnation,omitempty"`
+	ResolvePendingAllocation bool   `json:"resolvePendingAllocation,omitempty"`
+	WorkspaceID              string `json:"workspaceId"`
+	OperationID              string `json:"operationId"`
+	Revision                 uint64 `json:"revision"`
+	Action                   Action `json:"action"`
+	Profile                  string `json:"profile"`
+	ExpectedAllocationID     string `json:"expectedAllocationId,omitempty"`
+	ExpectedGeneration       uint64 `json:"expectedGeneration,omitempty"`
+	ExpectedIncarnation      string `json:"expectedIncarnation,omitempty"`
 }
 
 func (r Request) Validate() error {
@@ -34,6 +35,12 @@ func (r Request) Validate() error {
 	}
 	if r.Action != EnsureRunning && r.Action != Suspend && r.Action != ReleaseCompute {
 		return errors.New("invalid lifecycle action")
+	}
+	if r.ResolvePendingAllocation {
+		if r.Action == EnsureRunning || r.ExpectedAllocationID != "" || r.ExpectedGeneration != 0 || r.ExpectedIncarnation != "" {
+			return errors.New("pending allocation resolution requires a stop without an established identity")
+		}
+		return nil
 	}
 	if r.Action != EnsureRunning && (r.ExpectedAllocationID == "" || r.ExpectedGeneration == 0 || r.ExpectedIncarnation == "") {
 		return errors.New("destructive action requires expected allocation, generation and incarnation")
@@ -74,36 +81,40 @@ type Worker interface {
 	Resume(context.Context, string, string, WorkerRequest) error
 }
 type State struct {
-	PoolID             *string                  `json:"poolId,omitempty"`
-	Request            Request                  `json:"request"`
-	ProfileHash        string                   `json:"profileHash"`
-	Epoch              uint64                   `json:"epoch"`
-	Phase              string                   `json:"phase"`
-	Handle             *sandbox.WorkspaceHandle `json:"handle,omitempty"`
-	Identity           *Identity                `json:"identity,omitempty"`
-	Endpoint           string                   `json:"endpoint,omitempty"`
-	TaskID             string                   `json:"taskId,omitempty"`
-	CompletedOperation string                   `json:"completedOperation,omitempty"`
-	StartedAt          string                   `json:"startedAt,omitempty"`
-	Error              *WorkspaceError          `json:"error,omitempty"`
-	Operation          *Operation               `json:"operation,omitempty"`
+	BindingGeneration    uint64                   `json:"bindingGeneration,omitempty"`
+	LastProfileMigration *ProfileMigration        `json:"lastProfileMigration,omitempty"`
+	PendingStopIdentity  *Identity                `json:"pendingStopIdentity,omitempty"`
+	PoolID               *string                  `json:"poolId,omitempty"`
+	Request              Request                  `json:"request"`
+	ProfileHash          string                   `json:"profileHash"`
+	Epoch                uint64                   `json:"epoch"`
+	Phase                string                   `json:"phase"`
+	Handle               *sandbox.WorkspaceHandle `json:"handle,omitempty"`
+	Identity             *Identity                `json:"identity,omitempty"`
+	Endpoint             string                   `json:"endpoint,omitempty"`
+	TaskID               string                   `json:"taskId,omitempty"`
+	CompletedOperation   string                   `json:"completedOperation,omitempty"`
+	StartedAt            string                   `json:"startedAt,omitempty"`
+	Error                *WorkspaceError          `json:"error,omitempty"`
+	Operation            *Operation               `json:"operation,omitempty"`
 }
 type Access struct {
 	State State  `json:"state"`
 	Token string `json:"token,omitempty"`
 }
 type Controller struct {
-	gatewayCache gatewayCache
-	PoolID       string
-	PublicURL    string
-	Resources    func(context.Context) (ResourceSnapshot, error)
-	Control      *sandbox.Control
-	Profiles     map[string]Profile
-	SecretKey    []byte
-	Worker       Worker
+	gatewayCache      gatewayCache
+	RegistryNamespace string
+	PoolID            string
+	PublicURL         string
+	Resources         func(context.Context) (ResourceSnapshot, error)
+	Control           *sandbox.Control
+	Profiles          map[string]Profile
+	SecretKey         []byte
+	Worker            Worker
 }
 
-func New(control *sandbox.Control, profiles map[string]Profile, key []byte) (*Controller, error) {
+func New(control *sandbox.Control, profiles map[string]Profile, key []byte, registryNamespaces ...string) (*Controller, error) {
 	if control == nil || len(key) < 32 || len(profiles) == 0 {
 		return nil, errors.New("control, profiles and 32-byte runtime key required")
 	}
@@ -119,11 +130,39 @@ func New(control *sandbox.Control, profiles map[string]Profile, key []byte) (*Co
 		for _, container := range p.PodTemplate.Spec.Containers {
 			if container.Name == p.WorkerContainer {
 				found = true
+				mounted := false
+				for _, mount := range container.VolumeMounts {
+					if mount.Name == "workspace" && mount.MountPath != "" && !mount.ReadOnly {
+						mounted = true
+					}
+				}
+				if !mounted {
+					return nil, errors.New("worker container requires a writable workspace volume mount")
+				}
 			}
 		}
 		if !found {
 			return nil, errors.New("worker container missing from profile")
 		}
 	}
-	return &Controller{Control: control, Profiles: profiles, SecretKey: append([]byte(nil), key...), Worker: HTTPWorker{Client: &http.Client{Timeout: 15e9}}}, nil
+	namespaces := map[string]bool{}
+	for _, p := range profiles {
+		namespaces[p.Namespace] = true
+	}
+	registry := ""
+	if len(registryNamespaces) > 1 {
+		return nil, errors.New("one workspace registry namespace required")
+	}
+	if len(registryNamespaces) == 1 {
+		registry = registryNamespaces[0]
+	}
+	if registry == "" && len(namespaces) == 1 {
+		for namespace := range namespaces {
+			registry = namespace
+		}
+	}
+	if !namespaces[registry] {
+		return nil, errors.New("multiple profile namespaces require an explicit workspace registry namespace from those profiles")
+	}
+	return &Controller{RegistryNamespace: registry, Control: control, Profiles: profiles, SecretKey: append([]byte(nil), key...), Worker: HTTPWorker{Client: &http.Client{Timeout: 15e9}}}, nil
 }

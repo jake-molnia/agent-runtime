@@ -20,6 +20,14 @@ The response is the workspace resource. Repeating the same registration preserve
 the binding and stored data. A conflicting binding fails. Pool selection happens
 before the request: send it to the selected pool's controller.
 
+Registration reserves the workspace ID atomically in a retained Kubernetes Lease
+before creating storage. All replicas of a pool must use the same registry
+namespace. A single profile namespace is the default. With profiles in multiple
+namespaces, set `T3_WORKSPACE_REGISTRY_NAMESPACE` to one of them and retain that
+choice across updates. The controller needs its existing Lease permissions in
+that namespace. The registry record remains with the retained workspace; it is
+not an execution lock and does not expire when compute stops.
+
 ## Request a state
 
 `PUT /v1/workspaces/{id}/state` accepts a desired state:
@@ -94,6 +102,13 @@ Profile migration remains a management operation. `GET
 /v1/workspaces/{id}/migration` provides the profile hash, revision, epoch, and state
 needed by `POST /v1/profile-migrations`. Migration requires a completed compute
 release and preserves the workspace's storage identity.
+
+Each migration includes a stable `operationId` and the metadata response's
+`bindingGeneration` as `expectedBindingGeneration`. A successful migration
+increments that generation. Repeating the exact request is safe only while it
+remains the latest migration; an intervening rollback invalidates old retries.
+The migration tool stores this request before submitting it. Prepared legacy
+ledgers without these fields must finish with their compatible old controller.
 
 ## Client migration
 

@@ -183,7 +183,12 @@ func (c *Controller) physical(ctx context.Context, r Request, next State) (State
 		next.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	next.Error = nil
+	if digest(next.Request) != digest(s.Request) {
+		next.PendingStopIdentity = s.PendingStopIdentity
+	}
 	next.Request = s.Request
+	next.BindingGeneration = s.BindingGeneration
+	next.LastProfileMigration = s.LastProfileMigration
 	next.TaskID = s.TaskID
 	next.Operation = s.Operation
 	next.PoolID = s.PoolID

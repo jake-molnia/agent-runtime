@@ -94,7 +94,7 @@ func workspaceVersion(s State) string {
 	if s.Identity != nil {
 		incarnation = s.Identity.Incarnation
 	}
-	return digest([]any{s.Request, s.Epoch, incarnation})
+	return digest([]any{s.Request, s.Epoch, incarnation, s.BindingGeneration})
 }
 
 func (c *Controller) workspacePool() string {
@@ -168,10 +168,16 @@ func (c *Controller) registerWorkspace(ctx context.Context, id, pool, profile st
 				return State{}, false, failure(409, "workspace_changed", "Workspace changed during registration; read and retry", true)
 			}
 		}
+		if err = c.reserveWorkspace(ctx, id, c.Profiles[profile].Namespace); err != nil {
+			return State{}, false, err
+		}
 		return s, false, nil
 	}
 	var f *workspaceFailure
 	if !errors.As(err, &f) || (f.code != "workspace_not_found" && !(f.code == "workspace_binding" && existing != nil && existing.GetAnnotations()[stateAnnotation] == "" && existing.GetNamespace() == c.Profiles[profile].Namespace)) {
+		return State{}, false, err
+	}
+	if err = c.reserveWorkspace(ctx, id, c.Profiles[profile].Namespace); err != nil {
 		return State{}, false, err
 	}
 	spec, err := c.spec(profile, id, 1)
@@ -188,7 +194,7 @@ func (c *Controller) registerWorkspace(ctx context.Context, id, pool, profile st
 	if s.Request.Profile != "" {
 		return s, false, nil
 	}
-	s = State{PoolID: &c.PoolID, Request: Request{WorkspaceID: id, Profile: profile, OperationID: uuid.NewString(), Revision: 1, Action: ReleaseCompute}, ProfileHash: digest(c.Profiles[profile]), Phase: "released", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	s = State{BindingGeneration: 1, PoolID: &c.PoolID, Request: Request{WorkspaceID: id, Profile: profile, OperationID: uuid.NewString(), Revision: 1, Action: ReleaseCompute}, ProfileHash: digest(c.Profiles[profile]), Phase: "released", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	s.CompletedOperation = s.Request.OperationID
 	if err = c.save(ctx, obj, s); err != nil {
 		return State{}, false, failure(409, "workspace_changed", "Workspace changed during registration; read and retry", true)
@@ -207,13 +213,20 @@ func (c *Controller) workspaceResource(ctx context.Context, s State, tasks Tasks
 			access, status = c.controlAccess(ctx, s.Request.Profile, s.Request.WorkspaceID)
 			if status != http.StatusOK {
 				err = errors.New("unavailable")
+			} else if !sameAccessBinding(s, access.State) {
+				// Other replicas cannot invalidate this process's observation cache.
+				// A fresh binding always fences a cached worker observation.
+				access, err = c.Access(ctx, s.Request.Profile, s.Request.WorkspaceID)
+				strong = true
 			}
 		}
 		if err != nil {
 			resource.State = "unavailable"
 			resource.Error = &WorkspaceError{"worker_unavailable", "Current worker is unavailable", true}
 		} else {
-			s = access.State
+			if strong {
+				s = access.State
+			}
 			resource.DesiredState = desiredState(s.Request.Action)
 			resource.State = s.Phase
 			resource.Version = workspaceVersion(s)
@@ -249,6 +262,13 @@ func (c *Controller) workspaceResource(ctx context.Context, s State, tasks Tasks
 	}
 	return resource
 }
+func sameAccessBinding(current, observed State) bool {
+	if digest(current.Request) != digest(observed.Request) || current.Epoch != observed.Epoch || current.Phase != observed.Phase || current.Endpoint != observed.Endpoint {
+		return false
+	}
+	return current.Identity != nil && observed.Identity != nil && *current.Identity == *observed.Identity
+}
+
 func writeWorkspace(w http.ResponseWriter, status int, resource Workspace) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("ETag", strconv.Quote(resource.Version))
@@ -292,7 +312,7 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, 200, map[string]any{"profile": s.Request.Profile, "profileHash": s.ProfileHash, "revision": s.Request.Revision, "epoch": s.Epoch, "state": s.Phase})
+		writeJSON(w, 200, map[string]any{"profile": s.Request.Profile, "profileHash": s.ProfileHash, "bindingGeneration": s.BindingGeneration, "revision": s.Request.Revision, "epoch": s.Epoch, "state": s.Phase})
 	})
 	mux.HandleFunc("PUT /v1/workspaces/{workspaceId}/state", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
@@ -331,12 +351,23 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 			writeWorkspace(w, 200, observed)
 			return
 		}
-		if action != EnsureRunning && s.Handle != nil && (s.Identity == nil || observed.State == "unavailable") {
+		if action != EnsureRunning && s.Identity != nil && observed.State == "unavailable" {
 			writeAPIError(w, 409, "worker_unavailable", "Cannot stop compute without an authenticated worker identity", true)
 			return
 		}
-		if !sameIntent || completed {
+		needsFence := false
+		if action != EnsureRunning && s.Identity != nil {
+			if s.Request.ResolvePendingAllocation {
+				needsFence = s.PendingStopIdentity == nil || *s.PendingStopIdentity != *s.Identity
+			} else {
+				needsFence = s.Request.ExpectedAllocationID != s.Identity.AllocationID || s.Request.ExpectedGeneration != s.Identity.Generation || s.Request.ExpectedIncarnation != s.Identity.Incarnation
+			}
+		}
+		if !sameIntent || completed || needsFence {
 			next := Request{WorkspaceID: s.Request.WorkspaceID, Profile: s.Request.Profile, OperationID: uuid.NewString(), Revision: s.Request.Revision + 1, Action: action}
+			if action != EnsureRunning && s.Identity == nil {
+				next.ResolvePendingAllocation = true
+			}
 			if s.Identity != nil {
 				next.ExpectedAllocationID = s.Identity.AllocationID
 				next.ExpectedGeneration = s.Identity.Generation
@@ -346,12 +377,9 @@ func (c *Controller) workspaceRoutes(mux *http.ServeMux, tasks Tasks) {
 			s.PoolID = &c.PoolID
 			s.TaskID = ""
 			s.Operation = nil
+			s.PendingStopIdentity = nil
 			s.Error = nil
 			s.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
-			if s.Handle == nil && action != EnsureRunning {
-				s.Phase = input.DesiredState
-				s.CompletedOperation = next.OperationID
-			}
 			if err = c.save(r.Context(), obj, s); err != nil {
 				writeAPIError(w, 412, "version_conflict", "Workspace changed; read its current state before retrying", true)
 				return

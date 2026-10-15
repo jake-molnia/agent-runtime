@@ -655,7 +655,7 @@ func TestNativeProfileMigrationReplacesTaskHandleWithoutReexecution(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	migration := ProfileMigration{WorkspaceID: r.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: released.ProfileHash, ExpectedRevision: r.Revision, ExpectedEpoch: released.Epoch}
+	migration := ProfileMigration{OperationID: "test-migration", ExpectedBindingGeneration: new(uint64), WorkspaceID: r.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: released.ProfileHash, ExpectedRevision: r.Revision, ExpectedEpoch: released.Epoch}
 	migrated, err := c.MigrateProfile(context.Background(), migration)
 	if err != nil {
 		t.Fatal(err)

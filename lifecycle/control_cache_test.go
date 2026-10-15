@@ -281,7 +281,7 @@ func TestControlCacheProfileMigrationInvalidatesSourceAndTarget(t *testing.T) {
 		t.Fatal(status)
 	}
 	released := run(t, c, stopRequest(2, ReleaseCompute, state))
-	_, err := c.MigrateProfile(ctx, ProfileMigration{WorkspaceID: state.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: state.ProfileHash, ExpectedRevision: released.Request.Revision, ExpectedEpoch: released.Epoch})
+	_, err := c.MigrateProfile(ctx, ProfileMigration{OperationID: "test-migration", ExpectedBindingGeneration: new(uint64), WorkspaceID: state.Request.WorkspaceID, FromProfile: "default", ToProfile: "next", ExpectedProfileHash: state.ProfileHash, ExpectedRevision: released.Request.Revision, ExpectedEpoch: released.Epoch})
 	if err != nil {
 		t.Fatal(err)
 	}

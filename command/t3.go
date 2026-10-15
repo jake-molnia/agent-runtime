@@ -40,7 +40,7 @@ func t3Worker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	controller, err := lifecycle.New(control, profiles, key)
+	controller, err := lifecycle.New(control, profiles, key, os.Getenv("T3_WORKSPACE_REGISTRY_NAMESPACE"))
 	if err != nil {
 		return err
 	}
