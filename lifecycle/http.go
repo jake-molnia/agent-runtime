@@ -83,7 +83,7 @@ func Handler(c *Controller, tasks Tasks, token string) http.Handler {
 			return
 		}
 		taskID := state.TaskID
-		if taskID != "" && state.CompletedOperation != request.OperationID {
+		if taskID != "" {
 			status, err := tasks.Status(r.Context(), taskID)
 			if err != nil {
 				http.Error(w, "task status unavailable; retry same operation", 503)

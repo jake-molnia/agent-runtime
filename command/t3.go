@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
-	"github.com/jake-molnia/agent-runtime/hatchetbridge"
 	"github.com/jake-molnia/agent-runtime/lifecycle"
 	"github.com/jake-molnia/agent-runtime/sandbox"
 	"golang.org/x/sync/errgroup"
@@ -13,7 +11,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
 )
 
 func t3Worker(ctx context.Context) error {
@@ -59,26 +56,13 @@ func t3Worker(ctx context.Context) error {
 		}
 	}
 	controller.Resources = lifecycle.Resources(control.API, os.Getenv("T3_NODE_SELECTOR"), os.Getenv("T3_RESOURCE_NODE"))
-	client, err := hatchet.NewClient()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		bounded, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = client.Close(bounded)
-	}()
-	workflow := hatchetbridge.RegisterT3(client, controller)
-	worker, err := client.NewWorker(env("T3_WORKER_NAME", "t3-agent-runtime"), hatchet.WithWorkflows(workflow), hatchet.WithSlots(8))
-	if err != nil {
-		return err
-	}
+	runner := lifecycle.NewRunner(controller)
 	workerContext, stop := context.WithCancel(ctx)
 	defer stop()
 	g, ctx := errgroup.WithContext(workerContext)
-	g.Go(func() error { defer stop(); return worker.StartBlocking(ctx) })
+	g.Go(func() error { defer stop(); return runner.Run(ctx) })
 	g.Go(func() error {
-		return httpServer(ctx, env("T3_CONTROL_ADDR", ":8084"), lifecycle.Handler(controller, hatchetbridge.T3Tasks{Client: client, Workflow: workflow}, strings.TrimSpace(string(apiToken))))
+		return httpServer(ctx, env("T3_CONTROL_ADDR", ":8084"), lifecycle.Handler(controller, runner, strings.TrimSpace(string(apiToken))))
 	})
 	return g.Wait()
 }
