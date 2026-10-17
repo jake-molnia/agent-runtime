@@ -17,8 +17,8 @@ func TestScheduleIdentitySurvivesRevisionChangesAndRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstDecl, regular, durable, _ := first.Dump()
-	if len(regular) != 2 || len(durable) != len(fixture.plan.Workflow.Steps) {
-		t.Fatal("schedule retains a durable waiting wrapper")
+	if len(regular) != 0 || len(durable) != 1 {
+		t.Fatal("notebook schedule must execute inline in one durable task")
 	}
 	originalActions := map[string]bool{}
 	for _, task := range firstDecl.Tasks {
@@ -69,8 +69,8 @@ func TestScheduleIdentitySurvivesRevisionChangesAndRemoval(t *testing.T) {
 	callbacks := dagTestCallbacks(t, first)
 	wrong := fixture.ctx
 	wrong.input.Digest = next.Digest
-	if _, err := callbacks[ConfiguredWorkflowName("resolve", fixture.plan.Digest)](wrong); err == nil {
-		t.Fatal("scheduled resolve accepted another revision's payload")
+	if _, err := callbacks[ConfiguredWorkflowName("result", fixture.plan.Digest)](wrong); err == nil {
+		t.Fatal("scheduled task accepted another revision's payload")
 	}
 }
 
@@ -89,16 +89,12 @@ func TestNotebookAndStepHooksKeepOriginalCallerInput(t *testing.T) {
 	}
 	fixture.callbacks = dagTestCallbacks(t, workflow)
 	fixture.backend.outputs["brief"] = json.RawMessage(`{"status":"completed","report":"ok","sources":[],"notebook":"notes"}`)
-	for _, step := range []string{"resolve", "brief", "result"} {
-		name := ConfiguredWorkflowName(step, fixture.plan.Digest)
-		output, err := fixture.callbacks[name](fixture.ctx)
-		if err != nil {
-			t.Fatalf("%s: %v", step, err)
-		}
-		fixture.ctx.outputs[name] = output
-		if step == "result" && output.(ConfiguredResult).NotebookRevision != 1 {
-			t.Fatalf("scheduled run did not commit notebook: %+v", output)
-		}
+	output, err := fixture.callbacks[ConfiguredWorkflowName("result", fixture.plan.Digest)](fixture.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.(ConfiguredResult).NotebookRevision != 1 {
+		t.Fatalf("scheduled run did not commit notebook: %+v", output)
 	}
 	configuredTestJSON(t, seen, fixture.ctx.input.Input)
 }

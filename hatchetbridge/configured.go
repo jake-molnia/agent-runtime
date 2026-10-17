@@ -122,7 +122,7 @@ func registerConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		options = append(options, hatchet.WithWorkflowConcurrency(hatchet.Concurrency{Expression: `"` + name + `"`, MaxRuns: &limit, LimitStrategy: &strategy, Name: fmt.Sprintf("notebook-%x", sha256.Sum256([]byte(notebookStore.Root+"\x00"+name))), IsTenantScoped: true}))
 	}
 	workflow := client.NewWorkflow(workflowName, options...)
-	resolve := workflow.NewTask(taskName("resolve"), func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
+	resolveRun := func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredState, error) {
 		plan, err := load(input.Digest)
 		if err != nil {
 			return ConfiguredState{}, err
@@ -157,31 +157,15 @@ func registerConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 		}
 		ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "workflow-input", ContextID: ctx.WorkflowRunId(), TaskID: "resolve", From: messages.Actor{Agent: "caller", Revision: "v1"}, To: name, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
 		return ConfiguredState{Digest: input.Digest, Input: ref}, err
-	}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
-	graph := configuredStageGraph{current: current, load: load, executor: executor, store: store}
-	tasks, err := graph.register(workflow, resolve, func(ctx hatchet.Context) (ConfiguredState, error) {
-		var state ConfiguredState
-		err := ctx.StepOutput(resolve.GetName(), &state)
-		return state, err
-	}, taskName, hooks...)
-	if err != nil {
-		return nil, err
 	}
-	workflow.NewTask(taskName("result"), func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredResult, error) {
-		var state ConfiguredState
-		if err := ctx.StepOutput(taskName("resolve"), &state); err != nil {
-			return ConfiguredResult{}, err
-		}
+	graph := configuredStageGraph{current: current, load: load, executor: executor, store: store}
+	finishRun := func(ctx hatchet.Context, state ConfiguredState, result ConfiguredResult) (ConfiguredResult, error) {
 		plan, err := load(state.Digest)
 		if err != nil {
 			return ConfiguredResult{}, err
 		}
 		if plan.Workflow.Output != current.Workflow.Output {
 			return ConfiguredResult{}, errors.New("pinned output step changed; compatible worker required")
-		}
-		var result ConfiguredResult
-		if err := ctx.StepOutput(taskName(plan.Workflow.Output), &result); err != nil {
-			return result, err
 		}
 		if result.Digest != state.Digest {
 			return ConfiguredResult{}, errors.New("result workflow identity mismatch")
@@ -197,6 +181,41 @@ func registerConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 			result.NotebookRevision = record.Revision
 		}
 		return result, err
+	}
+	if current.Workflow.Notebook {
+		// One task keeps the tenant-wide lock through notebook read, execution, and commit.
+		workflow.NewDurableTask(taskName("result"), func(ctx hatchet.DurableContext, input ConfiguredInput) (ConfiguredResult, error) {
+			state, err := resolveRun(ctx, input)
+			if err != nil {
+				return ConfiguredResult{}, err
+			}
+			result, err := graph.runStep(ctx, state, current.Workflow.Output, taskName, hooks...)
+			if err != nil {
+				return result, err
+			}
+			return finishRun(ctx, state, result)
+		}, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))
+		return workflow, nil
+	}
+	resolve := workflow.NewTask(taskName("resolve"), resolveRun, hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
+	tasks, err := graph.register(workflow, resolve, func(ctx hatchet.Context) (ConfiguredState, error) {
+		var state ConfiguredState
+		err := ctx.StepOutput(resolve.GetName(), &state)
+		return state, err
+	}, taskName, hooks...)
+	if err != nil {
+		return nil, err
+	}
+	workflow.NewTask(taskName("result"), func(ctx hatchet.Context, input ConfiguredInput) (ConfiguredResult, error) {
+		var state ConfiguredState
+		if err := ctx.StepOutput(taskName("resolve"), &state); err != nil {
+			return ConfiguredResult{}, err
+		}
+		var result ConfiguredResult
+		if err := ctx.StepOutput(taskName(current.Workflow.Output), &result); err != nil {
+			return result, err
+		}
+		return finishRun(ctx, state, result)
 	}, hatchet.WithParents(resolve, tasks[current.Workflow.Output]), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(time.Minute))
 	return workflow, nil
 }
@@ -213,7 +232,6 @@ func (graph configuredStageGraph) register(workflow *hatchet.Workflow, resolve *
 	if err != nil {
 		return nil, err
 	}
-	name := graph.current.Workflow.Name
 	tasks := map[string]*hatchet.Task{}
 	for _, id := range order {
 		step := graph.current.Workflow.Steps[id]
@@ -230,87 +248,92 @@ func (graph configuredStageGraph) register(workflow *hatchet.Workflow, resolve *
 			if err != nil {
 				return ConfiguredResult{}, err
 			}
-			if state.Skip {
-				return ConfiguredResult{Digest: state.Digest}, nil
-			}
-			plan, err := graph.load(state.Digest)
-			if err != nil {
-				return ConfiguredResult{}, err
-			}
-			step, exists := plan.Workflow.Steps[id]
-			if !exists {
-				return ConfiguredResult{}, errors.New("pinned step is unavailable")
-			}
-			service, err := configuredService(plan, graph.executor, graph.store)
-			if err != nil {
-				return ConfiguredResult{}, err
-			}
-			initial, err := service.Receive(ctx.GetContext(), ctx.WorkflowRunId(), state.Input, name)
-			if err != nil {
-				return ConfiguredResult{}, err
-			}
-			initialValue, err := MessageData(initial, "input")
-			if err != nil {
-				return ConfiguredResult{}, err
-			}
-			values := map[string]json.RawMessage{}
-			for _, source := range step.Input.Sources {
-				if source == "input" {
-					continue
-				}
-				var result ConfiguredResult
-				if err := ctx.StepOutput(taskName(source), &result); err != nil {
-					return ConfiguredResult{}, err
-				}
-				if result.Digest != state.Digest {
-					return ConfiguredResult{}, errors.New("parent workflow identity mismatch")
-				}
-				values[source], err = configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), name, state, plan, source, result.Message)
-				if err != nil {
-					return ConfiguredResult{}, err
-				}
-			}
-			value, err := workflows.ResolveInput(step, initialValue, values)
-			if err != nil {
-				return ConfiguredResult{}, err
-			}
-			snapshot := plan.Agents[id]
-			ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "input-" + id, ContextID: ctx.WorkflowRunId(), TaskID: id, From: messages.Actor{Agent: "workflow", Revision: state.Digest}, To: snapshot.Agent.Name, InReplyTo: &state.Input, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
-			if err != nil {
-				return ConfiguredResult{}, err
-			}
-			hookInput := initialValue
-			if plan.Workflow.Notebook {
-				var envelope struct {
-					Task json.RawMessage `json:"task"`
-				}
-				if err := json.Unmarshal(initialValue, &envelope); err != nil {
-					return ConfiguredResult{}, err
-				}
-				hookInput = envelope.Task
-			}
-			stepContext := ctx.GetContext()
-			for _, hook := range hooks {
-				if hook.BeforeStep == nil {
-					continue
-				}
-				var finish func()
-				stepContext, finish, err = hook.BeforeStep(stepContext, ConfiguredStep{Workflow: name, Step: id, RunID: ctx.WorkflowRunId(), Initial: append(json.RawMessage(nil), hookInput...)})
-				if err != nil {
-					return ConfiguredResult{}, err
-				}
-				if finish != nil {
-					defer finish()
-				}
-			}
-			bounded := agentexec.WithInteractionWait(stepContext, func(waitCtx context.Context, sessionID, kind string) error {
-				return interactionWait(ctx, sessionID)(waitCtx, kind)
-			})
-			ref, err = service.Invoke(bounded, ctx.WorkflowRunId(), messages.Invocation{Stage: messages.Actor{Agent: snapshot.Agent.Name, Revision: snapshot.Agent.Digest}, Input: ref, TaskID: id, To: name})
-			return ConfiguredResult{Digest: state.Digest, Message: ref}, err
+			return graph.runStep(ctx, state, id, taskName, hooks...)
 		}, hatchet.WithParents(parents...), hatchet.WithRetries(0), hatchet.WithExecutionTimeout(24*time.Hour), hatchet.WithScheduleTimeout(time.Hour))
 	}
 	return tasks, nil
+}
+
+func (graph configuredStageGraph) runStep(ctx hatchet.DurableContext, state ConfiguredState, id string, taskName func(string) string, hooks ...ConfiguredHooks) (ConfiguredResult, error) {
+	name := graph.current.Workflow.Name
+	if state.Skip {
+		return ConfiguredResult{Digest: state.Digest}, nil
+	}
+	plan, err := graph.load(state.Digest)
+	if err != nil {
+		return ConfiguredResult{}, err
+	}
+	step, exists := plan.Workflow.Steps[id]
+	if !exists {
+		return ConfiguredResult{}, errors.New("pinned step is unavailable")
+	}
+	service, err := configuredService(plan, graph.executor, graph.store)
+	if err != nil {
+		return ConfiguredResult{}, err
+	}
+	initial, err := service.Receive(ctx.GetContext(), ctx.WorkflowRunId(), state.Input, name)
+	if err != nil {
+		return ConfiguredResult{}, err
+	}
+	initialValue, err := MessageData(initial, "input")
+	if err != nil {
+		return ConfiguredResult{}, err
+	}
+	values := map[string]json.RawMessage{}
+	for _, source := range step.Input.Sources {
+		if source == "input" {
+			continue
+		}
+		var result ConfiguredResult
+		if err := ctx.StepOutput(taskName(source), &result); err != nil {
+			return ConfiguredResult{}, err
+		}
+		if result.Digest != state.Digest {
+			return ConfiguredResult{}, errors.New("parent workflow identity mismatch")
+		}
+		values[source], err = configuredOutput(ctx.GetContext(), service, ctx.WorkflowRunId(), name, state, plan, source, result.Message)
+		if err != nil {
+			return ConfiguredResult{}, err
+		}
+	}
+	value, err := workflows.ResolveInput(step, initialValue, values)
+	if err != nil {
+		return ConfiguredResult{}, err
+	}
+	snapshot := plan.Agents[id]
+	ref, err := service.Publish(ctx.GetContext(), ctx.WorkflowRunId(), messages.Message{Version: messages.Version, ID: "input-" + id, ContextID: ctx.WorkflowRunId(), TaskID: id, From: messages.Actor{Agent: "workflow", Revision: state.Digest}, To: snapshot.Agent.Name, InReplyTo: &state.Input, Parts: []messages.Part{{Name: "input", Kind: messages.Data, Schema: "workflow-input", Data: value}}})
+	if err != nil {
+		return ConfiguredResult{}, err
+	}
+	hookInput := initialValue
+	if plan.Workflow.Notebook {
+		var envelope struct {
+			Task json.RawMessage `json:"task"`
+		}
+		if err := json.Unmarshal(initialValue, &envelope); err != nil {
+			return ConfiguredResult{}, err
+		}
+		hookInput = envelope.Task
+	}
+	stepContext := ctx.GetContext()
+	for _, hook := range hooks {
+		if hook.BeforeStep == nil {
+			continue
+		}
+		var finish func()
+		stepContext, finish, err = hook.BeforeStep(stepContext, ConfiguredStep{Workflow: name, Step: id, RunID: ctx.WorkflowRunId(), Initial: append(json.RawMessage(nil), hookInput...)})
+		if err != nil {
+			return ConfiguredResult{}, err
+		}
+		if finish != nil {
+			defer finish()
+		}
+	}
+	bounded := agentexec.WithInteractionWait(stepContext, func(waitCtx context.Context, sessionID, kind string) error {
+		return interactionWait(ctx, sessionID)(waitCtx, kind)
+	})
+	ref, err = service.Invoke(bounded, ctx.WorkflowRunId(), messages.Invocation{Stage: messages.Actor{Agent: snapshot.Agent.Name, Revision: snapshot.Agent.Digest}, Input: ref, TaskID: id, To: name})
+	return ConfiguredResult{Digest: state.Digest, Message: ref}, err
 }
 
 func configuredOutput(ctx context.Context, service *messages.Service, scope, name string, state ConfiguredState, plan workflows.Snapshot, id string, ref messages.Reference) (json.RawMessage, error) {
