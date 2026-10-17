@@ -16,6 +16,10 @@ import (
 const CompilerPolicy = "workflow-v2:whole-json:scalar-or-ordered-array:no-html-escape:all-steps-contribute:max32:input4MiB"
 const recurringPolicy = "workflow-v3:whole-json:no-html-escape:scheduled-input:single-step-notebook:input4MiB"
 
+// Drain legacy notebook runs on their original workers before replacing them.
+// The single-task topology must not reuse legacy workflow or action identities.
+const notebookPolicy = "workflow-v4:whole-json:no-html-escape:scheduled-input:single-task-notebook:input4MiB"
+
 type Snapshot struct {
 	Workflow Workflow                        `json:"workflow"`
 	Agents   map[string]definitions.Snapshot `json:"agents"`
@@ -139,11 +143,18 @@ func validateNotebookContract(raw json.RawMessage) error {
 }
 
 func (snapshot Snapshot) digest() (string, error) {
-	snapshot.Digest = ""
 	policy := CompilerPolicy
 	if snapshot.Workflow.Schedule != nil || snapshot.Workflow.DefaultInput != nil || snapshot.Workflow.Notebook {
 		policy = recurringPolicy
 	}
+	if snapshot.Workflow.Notebook {
+		policy = notebookPolicy
+	}
+	return snapshot.digestWithPolicy(policy)
+}
+
+func (snapshot Snapshot) digestWithPolicy(policy string) (string, error) {
+	snapshot.Digest = ""
 	data, err := json.Marshal(struct {
 		Policy   string   `json:"policy"`
 		Snapshot Snapshot `json:"snapshot"`
@@ -172,7 +183,31 @@ func (snapshot Snapshot) Verify() error {
 		return err
 	}
 	if !validDigest(snapshot.Digest) || snapshot.Digest != digest {
+		if snapshot.Workflow.Notebook && validDigest(snapshot.Digest) {
+			legacy, err := snapshot.digestWithPolicy(recurringPolicy)
+			if err != nil {
+				return err
+			}
+			if snapshot.Digest == legacy {
+				return nil
+			}
+		}
 		return errors.New("workflow snapshot digest mismatch")
+	}
+	return nil
+}
+
+// VerifyForExecution distinguishes readable historical snapshots from runnable topology.
+func (snapshot Snapshot) VerifyForExecution() error {
+	if err := snapshot.Verify(); err != nil {
+		return err
+	}
+	digest, err := snapshot.digest()
+	if err != nil {
+		return err
+	}
+	if snapshot.Digest != digest {
+		return errors.New("legacy notebook snapshot requires its original worker; drain legacy runs before upgrading")
 	}
 	return nil
 }

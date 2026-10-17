@@ -65,8 +65,8 @@ func TestRecurringDeclarationPinsCronInputAndSerializesRuns(t *testing.T) {
 	if !reflect.DeepEqual(declaration.ConcurrencyArr, execution.ConcurrencyArr) {
 		t.Fatal("generic and scheduled runs do not share notebook serialization")
 	}
-	if len(declaration.Tasks) != len(execution.Tasks) {
-		t.Fatal("schedule does not own the complete configured graph")
+	if len(declaration.Tasks) != 1 || len(execution.Tasks) != 1 {
+		t.Fatal("notebook execution must use one task for tenant-scoped concurrency")
 	}
 	if len(execution.ConcurrencyArr) != 1 || !execution.ConcurrencyArr[0].GetIsTenantScoped() || execution.ConcurrencyArr[0].GetMaxRuns() != 1 || execution.ConcurrencyArr[0].GetLimitStrategy().String() != "CANCEL_NEWEST" {
 		t.Fatalf("notebook concurrency missing: %+v", execution.ConcurrencyArr)
@@ -80,9 +80,6 @@ func TestRecurringNotebookSurvivesRunsAndOldReplay(t *testing.T) {
 		fixture.ctx.run, fixture.ctx.outputs = id, map[string]any{}
 		value, _ := json.Marshal(map[string]any{"status": status, "report": "A sourced report", "sources": []any{}, "notebook": note})
 		fixture.backend.outputs["brief"] = value
-		for _, step := range []string{"resolve", "brief"} {
-			fixture.runStep(t, step)
-		}
 		return fixture.runStep(t, "result")
 	}
 	first := run("run-1", "Already covered release A", "completed")
@@ -112,9 +109,8 @@ func TestRecurringNotebookSurvivesRunsAndOldReplay(t *testing.T) {
 
 func TestRecurringFailureAndConcurrentBaselineDoNotOverwriteNotes(t *testing.T) {
 	fixture, notes := recurringFixture(t)
-	fixture.runStep(t, "resolve")
 	fixture.backend.outputs["brief"] = json.RawMessage(`{"status":"completed","report":"Missing notebook","sources":[]}`)
-	if _, err := fixture.callbacks["brief"](fixture.ctx); err == nil {
+	if _, err := fixture.callbacks["result"](fixture.ctx); err == nil {
 		t.Fatal("invalid result accepted")
 	}
 	head, err := notes.Latest(context.Background(), fixture.plan.Workflow.Name)
@@ -123,9 +119,7 @@ func TestRecurringFailureAndConcurrentBaselineDoNotOverwriteNotes(t *testing.T) 
 	}
 	fixture.ctx.run = "run-2"
 	fixture.ctx.outputs = map[string]any{}
-	fixture.runStep(t, "resolve")
 	fixture.backend.outputs["brief"] = json.RawMessage(`{"status":"completed","report":"ok","sources":[],"notebook":"new"}`)
-	fixture.runStep(t, "brief")
 	fixture.runStep(t, "result")
 	// Simulate a delayed completion outside normal Hatchet serialization.
 	_, err = notes.Commit(context.Background(), fixture.plan.Workflow.Name, "run-1", fixture.plan.Digest, fixture.backend.outputs["brief"])
