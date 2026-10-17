@@ -46,6 +46,8 @@ func Run(ctx context.Context, args []string) error {
 		return serve(ctx)
 	case "t3-session":
 		return t3Session(ctx)
+	case "t3-ide":
+		return t3IDE(ctx)
 	case "worker":
 		return worker(ctx)
 	case "t3-worker":

@@ -3,7 +3,6 @@ package command
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -51,12 +50,19 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g, lifetime := errgroup.WithContext(ctx)
-	ide := exec.Command(env("T3_IDE_BINARY", "code-server"),
-		"--bind-addr", "127.0.0.1:8085", "--auth", "none", "--disable-telemetry", "--disable-update-check", "--disable-proxy",
-		"--config", filepath.Join(state, "ide", "config.yaml"),
-		"--user-data-dir", filepath.Join(state, "ide", "user-data"), "--extensions-dir", filepath.Join(state, "ide", "extensions"), root)
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// This stable process owns all IDE children, including replacements. The worker
+	// can keep tracking its descendants without mistaking an IDE restart for activity.
+	ide := exec.Command(executable, "t3-ide")
 	ide.Dir = root
+	ide.Stdout, ide.Stderr = os.Stdout, os.Stderr
 	ide.Env = t3IDEEnvironment(os.Environ(), desktop)
+	for _, value := range []string{"T3_WORKSPACE_ROOT=" + root, "T3_WORKER_STATE_DIR=" + state, "T3_IDE_BINARY=" + env("T3_IDE_BINARY", "code-server")} {
+		ide.Env = replaceEnvironment(ide.Env, value)
+	}
 	ideStarted := make(chan int, 1)
 	g.Go(func() error {
 		return runChildStarted(lifetime, ide, func(pid int) {
@@ -78,20 +84,7 @@ func runT3SessionTools(ctx context.Context, root, state string, desktop []string
 			slog.Info("sandbox startup", "stage", "worker-started", "elapsed_ms", time.Since(started).Milliseconds())
 		})
 	})
-	g.Go(func() error {
-		return waitDesktop(lifetime, "VS Code", func(ctx context.Context) error {
-			var health struct {
-				Status string `json:"status"`
-			}
-			if err := desktopJSON(ctx, "http://127.0.0.1:8085/healthz", &health); err != nil {
-				return err
-			}
-			if health.Status != "alive" && health.Status != "expired" {
-				return fmt.Errorf("unexpected IDE health status %q", health.Status)
-			}
-			return nil
-		})
-	})
+
 	return g.Wait()
 }
 
@@ -119,7 +112,28 @@ func t3IDEEnvironment(inherited, desktop []string) []string {
 	for _, item := range inherited {
 		key, _, _ := strings.Cut(item, "=")
 		switch key {
-		case "HOME", "USER", "LOGNAME", "T3_GIT_CREDENTIALS_FILE":
+		case "HOME", "USER", "LOGNAME", "T3_GIT_CREDENTIALS_FILE", "AZURE_EXTENSION_DIR", "AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "AZURE_CORE_COLLECT_TELEMETRY":
+			environment = replaceEnvironment(environment, item)
+		}
+	}
+	// Runtime display sockets are temporary; terminal tool configuration is not.
+	home := "/workspace/home"
+	for _, item := range inherited {
+		if value, ok := strings.CutPrefix(item, "HOME="); ok {
+			home = value
+		}
+	}
+	for _, item := range []string{
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+	} {
+		environment = replaceEnvironment(environment, item)
+	}
+	for _, item := range inherited {
+		key, _, _ := strings.Cut(item, "=")
+		switch key {
+		case "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME":
 			environment = replaceEnvironment(environment, item)
 		}
 	}
