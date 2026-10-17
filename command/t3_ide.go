@@ -18,13 +18,7 @@ func t3IDE(ctx context.Context) error {
 	root := env("T3_WORKSPACE_ROOT", "/workspace")
 	state := env("T3_WORKER_STATE_DIR", filepath.Join(root, ".t3-worker"))
 	logPath := filepath.Join(state, "ide", "code-server.log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
-		return err
-	}
-	log, err := openIDELog(logPath, 1<<20)
-	if err != nil {
-		return err
-	}
+	log := newIDELog(logPath, 1<<20)
 	defer log.Close()
 	for ctx.Err() == nil {
 		attempt, cancel := context.WithCancel(ctx)
@@ -41,7 +35,7 @@ func t3IDE(ctx context.Context) error {
 		// Raw diagnostics stay in bounded private files, outside the public service log.
 		cmd.Stdout, cmd.Stderr = log, log
 		var warming chan struct{}
-		err = runChildUntilExitStarted(attempt, cmd, func(int) {
+		err := runChildUntilExitStarted(attempt, cmd, func(int) {
 			warming = make(chan struct{})
 			go func() {
 				defer close(warming)
@@ -99,53 +93,92 @@ func warmT3IDE(ctx context.Context, origin string) error {
 
 // Keep the current and previous chunk so crash loops cannot fill workspace storage.
 type ideLog struct {
-	mu    sync.Mutex
-	file  *os.File
-	path  string
-	size  int64
-	limit int64
+	mu     sync.Mutex
+	file   *os.File
+	path   string
+	size   int64
+	limit  int64
+	warned bool
 }
 
-func openIDELog(path string, limit int64) (*ideLog, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+func newIDELog(path string, limit int64) *ideLog {
+	return &ideLog{path: path, limit: limit}
+}
+
+func (l *ideLog) open() error {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()
-		return nil, err
+		return err
 	}
-	return &ideLog{file: file, path: path, size: info.Size(), limit: limit}, nil
+	l.file, l.size = file, info.Size()
+	return nil
 }
 
 func (l *ideLog) Write(data []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	written := 0
+	// Keep draining the child's pipes even if storage is unavailable. A later
+	// write retries opening/rotation; raw diagnostics never go to the public log.
+	if err := l.write(data); err != nil {
+		if l.file != nil {
+			l.file.Close()
+			l.file = nil
+		}
+		if !l.warned {
+			slog.Warn("sandbox IDE diagnostics unavailable", "path", l.path)
+		}
+		l.warned = true
+	} else {
+		l.warned = false
+	}
+	return len(data), nil
+}
+
+func (l *ideLog) write(data []byte) error {
+	if l.file == nil {
+		if err := l.open(); err != nil {
+			return err
+		}
+	}
 	for len(data) > 0 {
 		if l.size >= l.limit {
 			if err := l.file.Close(); err != nil {
-				return written, err
+				l.file = nil
+				return err
 			}
+			l.file = nil
 			if err := os.Rename(l.path, l.path+".1"); err != nil {
-				return written, err
+				return err
 			}
-			file, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-			if err != nil {
-				return written, err
+			if err := l.open(); err != nil {
+				return err
 			}
-			l.file, l.size = file, 0
 		}
 		n, err := l.file.Write(data[:min(int64(len(data)), l.limit-l.size)])
-		written += n
 		l.size += int64(n)
 		if err != nil {
-			return written, err
+			return err
 		}
 		data = data[n:]
 	}
-	return written, nil
+	return nil
 }
 
-func (l *ideLog) Close() error { return l.file.Close() }
+func (l *ideLog) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file == nil {
+		return nil
+	}
+	err := l.file.Close()
+	l.file = nil
+	return err
+}

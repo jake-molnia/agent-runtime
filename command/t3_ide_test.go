@@ -33,16 +33,25 @@ func TestT3IDEWarmLoadsBackendWithoutChangingWorkspace(t *testing.T) {
 }
 
 func TestT3IDERestartsChildWithoutStoppingWorker(t *testing.T) {
-	testT3IDERestart(t, false)
+	testT3IDERestart(t, false, false)
 }
 
 func TestT3IDEKeepsWorkerAliveAcrossRepeatedStartupFailures(t *testing.T) {
-	testT3IDERestart(t, true)
+	testT3IDERestart(t, true, false)
 }
 
-func testT3IDERestart(t *testing.T, failStartup bool) {
+func TestT3IDELoggingFailureDoesNotStopWorker(t *testing.T) {
+	testT3IDERestart(t, false, true)
+}
+
+func testT3IDERestart(t *testing.T, failStartup, failLogging bool) {
 	t.Helper()
 	root := t.TempDir()
+	if failLogging {
+		if err := os.MkdirAll(filepath.Join(root, "state", "ide", "code-server.log"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	eventsPath := filepath.Join(root, "events")
 	if err := syscall.Mkfifo(eventsPath, 0600); err != nil {
 		t.Fatal(err)
@@ -144,6 +153,9 @@ func testT3IDERestart(t *testing.T, failStartup bool) {
 	if !strings.Contains(string(args), "--disable-workspace-trust\n") {
 		t.Fatal("workspace trust still enabled")
 	}
+	if failLogging {
+		return
+	}
 	diagnostics, err := os.ReadFile(filepath.Join(root, "state", "ide", "code-server.log"))
 	if err != nil {
 		t.Fatal(err)
@@ -157,10 +169,7 @@ func testT3IDERestart(t *testing.T, failStartup bool) {
 
 func TestT3IDELogRetainsBoundedPrivateDiagnostics(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "code-server.log")
-	log, err := openIDELog(path, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := newIDELog(path, 8)
 	if _, err := log.Write([]byte("1111111122222222333333334444")); err != nil {
 		t.Fatal(err)
 	}
@@ -239,5 +248,50 @@ func TestT3IDEShutdownReapsEditorBeforeOuterDeadline(t *testing.T) {
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("editor %d survived outer supervisor shutdown: %v", pid, err)
+	}
+}
+
+func TestT3IDELogRecoversAfterRotationFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "code-server.log")
+	log := newIDELog(path, 4)
+	defer log.Close()
+	if _, err := log.Write([]byte("full")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".1", 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = log.Write([]byte("drop"))
+	if err := os.Remove(path + ".1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.Write([]byte("next")); err != nil {
+		t.Fatalf("logging did not recover: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "next" {
+		t.Fatalf("missing recovered output: %q %v", data, err)
+	}
+}
+
+func TestT3IDELogRecoversAfterInitializationFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "code-server.log")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	log := newIDELog(path, 8)
+	defer log.Close()
+	if n, err := log.Write([]byte("drop")); err != nil || n != 4 {
+		t.Fatalf("diagnostic storage interrupted child output: %d %v", n, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.Write([]byte("retained")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "retained" {
+		t.Fatalf("logging did not recover: %q %v", data, err)
 	}
 }
