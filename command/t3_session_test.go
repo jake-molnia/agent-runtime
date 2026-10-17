@@ -2,10 +2,12 @@ package command
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +16,20 @@ import (
 	"testing"
 	"time"
 )
+
+// The launcher starts its own executable as the stable IDE supervisor.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "t3-ide" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		defer stop()
+		if err := Run(ctx, os.Args[1:]); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestT3SessionEnvironmentKeepsIdentityAndSharesDesktop(t *testing.T) {
 	inherited := []string{"HOME=/workspace/home", "T3_WORKER_TOKEN=worker-secret", "OPENAI_API_KEY=provider-secret", "DISPLAY=:0", "DISPLAY=:1", "XAUTHORITY=/wrong", "T3CODE_SANDBOX_IDE_URL=http://wrong", "T3_GIT_CREDENTIALS_FILE=/etc/t3-scm/credentials.json"}
@@ -38,6 +54,16 @@ func TestT3SessionEnvironmentKeepsIdentityAndSharesDesktop(t *testing.T) {
 	}
 }
 
+func TestT3IDEUsesPersistentToolConfiguration(t *testing.T) {
+	inherited := []string{"HOME=/workspace/home", "AZURE_EXTENSION_DIR=/opt/azure/extensions", "AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no"}
+	ide := strings.Join(t3IDEEnvironment(inherited, desktopEnv("/workspace", "/tmp/display")), "\n")
+	for _, want := range []string{"XDG_CONFIG_HOME=/workspace/home/.config", "XDG_DATA_HOME=/workspace/home/.local/share", "XDG_CACHE_HOME=/workspace/home/.cache", "AZURE_EXTENSION_DIR=/opt/azure/extensions"} {
+		if !strings.Contains(ide, want) {
+			t.Errorf("IDE missing %s", want)
+		}
+	}
+}
+
 func TestT3ExecutionWorkerStartsBeforeIDEHealth(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:8085")
 	if err != nil {
@@ -54,7 +80,7 @@ func TestT3ExecutionWorkerStartsBeforeIDEHealth(t *testing.T) {
 	server.Start()
 	defer server.Close()
 	root := t.TempDir()
-	ide, worker, marker := filepath.Join(root, "ide"), filepath.Join(root, "worker"), filepath.Join(root, "worker-started")
+	ide, worker, marker := filepath.Join(root, "fake-ide"), filepath.Join(root, "worker"), filepath.Join(root, "worker-started")
 	if err := os.WriteFile(ide, []byte("#!/bin/sh\nexec sleep 60\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -99,98 +125,90 @@ func TestT3ExecutionWorkerStartsBeforeIDEHealth(t *testing.T) {
 	t.Fatal("execution worker did not start with the desktop environment")
 }
 
-func TestT3CoreStartsBeforeDesktopAndStopsOnAuxiliaryExit(t *testing.T) {
-	for _, failedService := range []string{"desktop", "ide"} {
-		t.Run(failedService, func(t *testing.T) {
-			root := t.TempDir()
-			config := filepath.Join(root, "config")
-			if err := os.Mkdir(config, 0700); err != nil {
-				t.Fatal(err)
-			}
-			for binary, script := range map[string]string{
-				"xauth":         "exit 0",
-				"xdpyinfo":      "exit 0",
-				"dbus-send":     "exit 0",
-				"dbus-daemon":   "exec sleep 60",
-				"Xtigervnc":     "exec sleep 60",
-				"xfce4-session": "echo $$ > \"$SANDBOX_ROOT/desktop-pid\"; exec sleep 60",
-				"wmctrl":        "exit 1",
-				"ide":           "exec sleep 60",
-				"worker":        "echo \"$$ $T3_IDE_PID\" > \"$T3_WORKSPACE_ROOT/worker-pids\"; exec sleep 60",
-			} {
-				if err := os.WriteFile(filepath.Join(root, binary), []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("PATH", root+":"+os.Getenv("PATH"))
-			t.Setenv("SANDBOX_DESKTOP_CONFIG", config)
-			t.Setenv("T3_WORKSPACE_ROOT", root)
-			t.Setenv("T3_WORKER_STATE_DIR", filepath.Join(root, "state"))
-			t.Setenv("T3_IDE_BINARY", filepath.Join(root, "ide"))
-			t.Setenv("T3_WORKER_NODE", filepath.Join(root, "worker"))
-			ctx, cancel := context.WithCancel(context.Background())
-			done := make(chan struct{})
-			var sessionErr error
-			go func() {
-				defer close(done)
-				sessionErr = t3Session(ctx)
-			}()
-			defer func() {
-				cancel()
-				select {
-				case <-done:
-				case <-time.After(7 * time.Second):
-					t.Error("session did not stop its children")
-				}
-			}()
-			readPIDs := func(name string, count int) []int {
-				t.Helper()
-				deadline := time.Now().Add(3 * time.Second)
-				for time.Now().Before(deadline) {
-					data, _ := os.ReadFile(filepath.Join(root, name))
-					fields := strings.Fields(string(data))
-					if len(fields) == count {
-						pids := make([]int, count)
-						for i, value := range fields {
-							pid, err := strconv.Atoi(value)
-							if err != nil || pid <= 0 {
-								t.Fatalf("invalid child PID: %q", value)
-							}
-							pids[i] = pid
-						}
-						return pids
+func TestT3CoreStartsBeforeDesktopAndStopsOnDesktopExit(t *testing.T) {
+	root := t.TempDir()
+	config := filepath.Join(root, "config")
+	if err := os.Mkdir(config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for binary, script := range map[string]string{
+		"xauth":         "exit 0",
+		"xdpyinfo":      "exit 0",
+		"dbus-send":     "exit 0",
+		"dbus-daemon":   "exec sleep 60",
+		"Xtigervnc":     "exec sleep 60",
+		"xfce4-session": "echo $$ > \"$SANDBOX_ROOT/desktop-pid\"; exec sleep 60",
+		"wmctrl":        "exit 1",
+		"ide":           "exec sleep 60",
+		"worker":        "echo \"$$ $T3_IDE_PID\" > \"$T3_WORKSPACE_ROOT/worker-pids\"; exec sleep 60",
+	} {
+		if err := os.WriteFile(filepath.Join(root, binary), []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", root+":"+os.Getenv("PATH"))
+	t.Setenv("SANDBOX_DESKTOP_CONFIG", config)
+	t.Setenv("T3_WORKSPACE_ROOT", root)
+	t.Setenv("T3_WORKER_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("T3_IDE_BINARY", filepath.Join(root, "ide"))
+	t.Setenv("T3_WORKER_NODE", filepath.Join(root, "worker"))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var sessionErr error
+	go func() {
+		defer close(done)
+		sessionErr = t3Session(ctx)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(7 * time.Second):
+			t.Error("session did not stop its children")
+		}
+	}()
+	readPIDs := func(name string, count int) []int {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			data, _ := os.ReadFile(filepath.Join(root, name))
+			fields := strings.Fields(string(data))
+			if len(fields) == count {
+				pids := make([]int, count)
+				for i, value := range fields {
+					pid, err := strconv.Atoi(value)
+					if err != nil || pid <= 0 {
+						t.Fatalf("invalid child PID: %q", value)
 					}
-					select {
-					case <-done:
-						t.Fatalf("session exited before %s: %v", name, sessionErr)
-					case <-time.After(10 * time.Millisecond):
-					}
+					pids[i] = pid
 				}
-				t.Fatalf("%s never started while desktop and IDE were unready", name)
-				return nil
-			}
-			pids := readPIDs("worker-pids", 2)
-			desktopPID := readPIDs("desktop-pid", 1)[0]
-			failedPID, binary := desktopPID, "xfce4-session"
-			if failedService == "ide" {
-				failedPID, binary = pids[1], "ide"
-			}
-			if err := syscall.Kill(failedPID, syscall.SIGTERM); err != nil {
-				t.Fatal(err)
+				return pids
 			}
 			select {
 			case <-done:
-			case <-time.After(7 * time.Second):
-				t.Fatal("auxiliary exit did not stop the session")
+				t.Fatalf("session exited before %s: %v", name, sessionErr)
+			case <-time.After(10 * time.Millisecond):
 			}
-			if sessionErr == nil || !strings.Contains(sessionErr.Error(), binary) {
-				t.Fatalf("auxiliary failure was lost: %v", sessionErr)
-			}
-			for _, pid := range append(pids, desktopPID) {
-				if syscall.Kill(pid, 0) == nil {
-					t.Errorf("session left child %d running", pid)
-				}
-			}
-		})
+		}
+		t.Fatalf("%s never started while desktop and IDE were unready", name)
+		return nil
+	}
+	pids := readPIDs("worker-pids", 2)
+	desktopPID := readPIDs("desktop-pid", 1)[0]
+	if err := syscall.Kill(desktopPID, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(7 * time.Second):
+		t.Fatal("auxiliary exit did not stop the session")
+	}
+	if sessionErr == nil || !strings.Contains(sessionErr.Error(), "xfce4-session") {
+		t.Fatalf("auxiliary failure was lost: %v", sessionErr)
+	}
+	for _, pid := range append(pids, desktopPID) {
+		if syscall.Kill(pid, 0) == nil {
+			t.Errorf("session left child %d running", pid)
+		}
 	}
 }

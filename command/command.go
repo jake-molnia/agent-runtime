@@ -46,6 +46,8 @@ func Run(ctx context.Context, args []string) error {
 		return serve(ctx)
 	case "t3-session":
 		return t3Session(ctx)
+	case "t3-ide":
+		return t3IDE(ctx)
 	case "worker":
 		return worker(ctx)
 	case "t3-worker":
@@ -134,17 +136,17 @@ func runChild(ctx context.Context, cmd *exec.Cmd) error {
 }
 
 func runChildUntilExit(ctx context.Context, cmd *exec.Cmd) error {
-	return runChildUntilExitStarted(ctx, cmd, nil)
+	return runChildUntilExitStarted(ctx, cmd, nil, 5*time.Second)
 }
 
 func runChildStarted(ctx context.Context, cmd *exec.Cmd, started func(int)) error {
-	if err := runChildUntilExitStarted(ctx, cmd, started); err != nil {
+	if err := runChildUntilExitStarted(ctx, cmd, started, 5*time.Second); err != nil {
 		return err
 	}
 	return fmt.Errorf("%s exited", cmd.Path)
 }
 
-func runChildUntilExitStarted(ctx context.Context, cmd *exec.Cmd, started func(int)) error {
+func runChildUntilExitStarted(ctx context.Context, cmd *exec.Cmd, started func(int), shutdownGrace time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -164,7 +166,7 @@ func runChildUntilExitStarted(ctx context.Context, cmd *exec.Cmd, started func(i
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(shutdownGrace):
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			<-done
 		}
