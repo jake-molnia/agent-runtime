@@ -81,7 +81,7 @@ func registerConfiguredWorkflow(client *hatchet.Client, backend agentexec.Backen
 	if client == nil || store == nil || root == "" {
 		return nil, errors.New("configured workflow dependencies required")
 	}
-	if err := current.Verify(); err != nil {
+	if err := current.VerifyForExecution(); err != nil {
 		return nil, err
 	}
 	if len(settings) > 1 {
