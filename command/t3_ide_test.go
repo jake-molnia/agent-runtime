@@ -3,10 +3,12 @@ package command
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -31,6 +33,15 @@ func TestT3IDEWarmLoadsBackendWithoutChangingWorkspace(t *testing.T) {
 }
 
 func TestT3IDERestartsChildWithoutStoppingWorker(t *testing.T) {
+	testT3IDERestart(t, false)
+}
+
+func TestT3IDEKeepsWorkerAliveAcrossRepeatedStartupFailures(t *testing.T) {
+	testT3IDERestart(t, true)
+}
+
+func testT3IDERestart(t *testing.T, failStartup bool) {
+	t.Helper()
 	root := t.TempDir()
 	eventsPath := filepath.Join(root, "events")
 	if err := syscall.Mkfifo(eventsPath, 0600); err != nil {
@@ -51,8 +62,12 @@ func TestT3IDERestartsChildWithoutStoppingWorker(t *testing.T) {
 	}()
 	ide := filepath.Join(root, "fake-ide")
 	worker := filepath.Join(root, "fake-worker")
+	ideLifetime := "sleep 60 &\nwait\n"
+	if failStartup {
+		ideLifetime = "exit 42\n"
+	}
 	for path, script := range map[string]string{
-		ide:    "#!/bin/sh\necho diagnostic-stdout\necho diagnostic-stderr >&2\nprintf '%s\\n' \"$@\" > \"$T3_WORKSPACE_ROOT/ide-args\"\necho \"ide $$ $PPID\" > \"$T3_WORKSPACE_ROOT/events\"\nsleep 60 &\nwait\n",
+		ide:    "#!/bin/sh\necho diagnostic-stdout\necho diagnostic-stderr >&2\nprintf '%s\\n' \"$@\" > \"$T3_WORKSPACE_ROOT/ide-args\"\necho \"ide $$ $PPID\" > \"$T3_WORKSPACE_ROOT/events\"\n" + ideLifetime,
 		worker: "#!/bin/sh\necho \"worker $$ $T3_IDE_PID\" > \"$T3_WORKSPACE_ROOT/events\"\nexec sleep 60\n",
 	} {
 		if err := os.WriteFile(path, []byte(script), 0700); err != nil {
@@ -110,8 +125,10 @@ func TestT3IDERestartsChildWithoutStoppingWorker(t *testing.T) {
 	if supervisorPID != workerSupervisorPID {
 		t.Fatal("worker is not tracking the stable supervisor")
 	}
-	if err := syscall.Kill(idePID, syscall.SIGTERM); err != nil {
-		t.Fatal(err)
+	if !failStartup {
+		if err := syscall.Kill(idePID, syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
 	}
 	kind, replacement, parent := next()
 	if kind != "ide" || replacement == idePID || parent != supervisorPID {
@@ -165,5 +182,62 @@ func TestT3IDELogRetainsBoundedPrivateDiagnostics(t *testing.T) {
 		if info.Mode().Perm() != 0600 {
 			t.Fatalf("diagnostics are not private: %v", info.Mode())
 		}
+	}
+}
+
+func TestT3IDEShutdownReapsEditorBeforeOuterDeadline(t *testing.T) {
+	root := t.TempDir()
+	eventsPath := filepath.Join(root, "ready")
+	if err := syscall.Mkfifo(eventsPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	pipe, err := os.OpenFile(eventsPath, os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pipe.Close()
+	ide := filepath.Join(root, "fake-ide")
+	if err := os.WriteFile(ide, []byte("#!/bin/sh\ntrap '' TERM\necho $$ > \"$T3_WORKSPACE_ROOT/ready\"\nsleep 60 &\nwait\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := exec.Command(executable, "t3-ide")
+	supervisor.Env = append(os.Environ(), "T3_WORKSPACE_ROOT="+root, "T3_WORKER_STATE_DIR="+filepath.Join(root, "state"), "T3_IDE_BINARY="+ide)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runChildStarted(ctx, supervisor, nil) }()
+	ready := make(chan int, 1)
+	go func() {
+		var pid int
+		if _, err := fmt.Fscanln(pipe, &pid); err == nil {
+			ready <- pid
+		}
+	}()
+	var pid int
+	select {
+	case pid = <-ready:
+	case err := <-done:
+		t.Fatalf("supervisor exited before editor started: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("editor did not start")
+	}
+	// This PID is announced by our own child at startup; reap its owned group on test failure too.
+	defer syscall.Kill(-pid, syscall.SIGKILL)
+	started := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(7 * time.Second):
+		t.Fatal("session shutdown timed out")
+	}
+	if elapsed := time.Since(started); elapsed >= 4500*time.Millisecond {
+		t.Fatalf("editor cleanup consumed the outer five-second shutdown budget: %s", elapsed)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("editor %d survived outer supervisor shutdown: %v", pid, err)
 	}
 }

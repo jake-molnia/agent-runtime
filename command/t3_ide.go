@@ -35,13 +35,13 @@ func t3IDE(ctx context.Context) error {
 			"--user-data-dir", filepath.Join(state, "ide", "user-data"),
 			"--extensions-dir", filepath.Join(state, "ide", "extensions"), root)
 		cmd.Dir = root
-		// Extension hosts can outlive the editor and retain its output pipes. Bound
-		// the drain so runChildStarted can reap the process group and restart it.
+		// Extension hosts can retain the editor's output pipes. Two seconds to stop
+		// plus one to drain leaves time inside the outer five-second shutdown budget.
 		cmd.WaitDelay = time.Second
 		// Raw diagnostics stay in bounded private files, outside the public service log.
 		cmd.Stdout, cmd.Stderr = log, log
 		var warming chan struct{}
-		err = runChildStarted(attempt, cmd, func(int) {
+		err = runChildUntilExitStarted(attempt, cmd, func(int) {
 			warming = make(chan struct{})
 			go func() {
 				defer close(warming)
@@ -52,7 +52,7 @@ func t3IDE(ctx context.Context) error {
 					cancel()
 				}
 			}()
-		})
+		}, 2*time.Second)
 		cancel()
 		if warming != nil {
 			<-warming
@@ -62,8 +62,10 @@ func t3IDE(ctx context.Context) error {
 		}
 		if err != nil {
 			fmt.Fprintln(log, err)
-			slog.Warn("sandbox IDE restarting", "diagnostics", logPath)
 		}
+		// IDE availability does not own the worker lifetime, including on cold startup.
+		// Failed readiness is visible through the IDE proxy and private diagnostics.
+		slog.Warn("sandbox IDE restarting", "diagnostics", logPath)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
